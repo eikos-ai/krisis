@@ -124,7 +124,7 @@ func canonicalTools() []map[string]any {
 				"properties": map[string]any{
 					"task":          map[string]any{"type": "string", "description": "Task description sent to Claude Code"},
 					"session_id":    map[string]any{"type": "string", "description": "Resume a previous session for context continuity. Omit for new session."},
-					"allowed_tools": map[string]any{"type": "string", "description": "Comma-separated tool whitelist (default: Bash,Read,Write,Edit)"},
+					"allowed_tools": map[string]any{"type": "string", "description": "Comma-separated tool whitelist (default: Read,Write,Edit)"},
 					"working_dir":   map[string]any{"type": "string", "description": "Working directory — must be within allowed project roots"},
 				},
 				"required": []string{"task"},
@@ -472,7 +472,15 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, sessionID, allowed
 		return `{"error": "claude CLI not found on PATH"}`
 	}
 
-	// Validate working_dir if provided
+	// Default working_dir to first project root if empty
+	if workingDir == "" {
+		for _, root := range te.AllowedRoots {
+			workingDir = root
+			break
+		}
+	}
+
+	// Validate working_dir
 	if workingDir != "" {
 		resolved, err := te.resolveAndValidate(workingDir, false)
 		if err != nil {
@@ -481,13 +489,18 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, sessionID, allowed
 		workingDir = resolved
 	}
 
+	// Prepend scoping instruction so Claude Code stays within working_dir
+	if workingDir != "" {
+		task = fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory.\n\n%s", workingDir, task)
+	}
+
 	// Build command args
 	args := []string{"-p", task, "--output-format", "stream-json", "--verbose"}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	}
 	if allowedTools == "" {
-		allowedTools = "Bash,Read,Write,Edit"
+		allowedTools = "Read,Write,Edit"
 	}
 	args = append(args, "--allowedTools", allowedTools)
 
