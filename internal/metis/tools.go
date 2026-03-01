@@ -472,11 +472,19 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, sessionID, allowed
 		return `{"error": "claude CLI not found on PATH"}`
 	}
 
-	// Default working_dir to first project root if empty
+	// Default working_dir to project root if empty.
+	// Maps iterate in random order, so pick "krisis" if present,
+	// otherwise fall back to the alphabetically first key.
 	if workingDir == "" {
-		for _, root := range te.AllowedRoots {
+		if root, ok := te.AllowedRoots["krisis"]; ok {
 			workingDir = root
-			break
+		} else if len(te.AllowedRoots) > 0 {
+			keys := make([]string, 0, len(te.AllowedRoots))
+			for k := range te.AllowedRoots {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			workingDir = te.AllowedRoots[keys[0]]
 		}
 	}
 

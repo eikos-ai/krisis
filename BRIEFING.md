@@ -75,6 +75,12 @@ Framework-level learnings (design principles, architectural decisions) decay too
 
 ---
 
+#### Task 20: Fix nondeterministic claude_code working_dir default
+
+In `internal/metis/tools.go`, the `claudeCode` function defaults `working_dir` to the first value from `te.AllowedRoots` when empty. Go maps have random iteration order, so this picks a random project root each time. Fix: look for a root named `"krisis"` first, then fall back to the alphabetically first key. One block to replace.
+
+---
+
 #### Task 19: Fix claude_code working_dir validation
 
 Three bugs exposed when Metis invoked Claude Code without proper scoping:
