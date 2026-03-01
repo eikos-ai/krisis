@@ -30,6 +30,29 @@ Go Metis runs locally on port 8321. Connects to mimne_v2 Postgres, retrieves mem
 
 **IMPORTANT**: Before testing, always verify with `lsof -i :8321` that no other process is holding the port. Go's net.Listen binds IPv6 by default; if another process holds IPv4 on the same port, both coexist silently and the browser hits the wrong one.
 
+## Task: Fix History Turn Display in Main Panel
+
+### Problem
+The History read-only mode partially works: clicking a history exchange disables the input and shows the "Viewing history" banner. However, the main panel doesn't populate with that turn's content. It continues to show whatever was previously displayed (often just "Ready.").
+
+### Requirement
+When a user clicks a history exchange, populate the main conversation panel with that exchange's human input and assistant response, exactly as if that were the current turn.
+
+### Implementation
+In `static/index.html`, modify the history exchange click handler to:
+
+1. Hide the welcome message
+2. Show the user-message and response sections
+3. Populate `#user-text` with `exchange.human.text`
+4. Populate `#response-text` with the rendered markdown of `exchange.assistant.text` (if it exists)
+5. Clear or hide the activity log and timing display for historical turns (they don't have that data)
+6. Keep all the existing read-only mode behavior (disable input, show banner)
+
+When the user closes the history panel or clicks "Back to current", restore the most recent actual turn (the one before they started browsing history). This may require tracking the "current" turn content before switching to history view.
+
+### Files to Modify
+- `static/index.html` — update the history exchange click event handler
+
 ## Tasks
 
 ### Pending

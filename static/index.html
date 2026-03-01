@@ -489,6 +489,42 @@
             background: #c8c8ce;
             border-radius: 3px;
         }
+
+        /* History read-only mode banner */
+        #history-mode-banner {
+            display: none;
+            font-size: 12px;
+            color: #8a8a92;
+            background: #e8e8eb;
+            border-radius: 8px;
+            padding: 6px 14px;
+            max-width: 900px;
+            margin: 0 auto 8px;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        #history-mode-banner.visible {
+            display: flex;
+        }
+
+        #history-mode-banner button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #4a5568;
+            font-family: inherit;
+            font-size: 12px;
+            padding: 0;
+            text-decoration: underline;
+        }
+
+        #user-input:disabled {
+            background: #f0f0f3;
+            color: #a0a0a8;
+            cursor: not-allowed;
+            border-color: #d8d8dc;
+        }
     </style>
 </head>
 <body>
@@ -526,6 +562,10 @@
     </div>
 
     <div id="input-area">
+        <div id="history-mode-banner">
+            <span>Viewing history — input disabled</span>
+            <button id="history-mode-back">Back to current</button>
+        </div>
         <div id="attachments" style="display: none; max-width: 900px; margin: 0 auto 8px auto;"></div>
         <div id="input-wrapper">
             <textarea
@@ -554,6 +594,73 @@
         const timing = document.getElementById('timing');
 
         let busy = false;
+        let currentTurnSnapshot = null;
+        const historyModeBanner = document.getElementById('history-mode-banner');
+
+        function updateReadOnlyMode() {
+            const viewingHistory = !!document.querySelector('.history-exchange.expanded');
+            input.disabled = viewingHistory;
+            sendBtn.disabled = viewingHistory || busy;
+            historyModeBanner.classList.toggle('visible', viewingHistory);
+        }
+
+        function closeHistoryPanel() {
+            historyPanel.classList.remove('open');
+            historyBackdrop.classList.remove('open');
+        }
+
+        function exitHistoryMode() {
+            const hadExpanded = !!historyList.querySelector('.history-exchange.expanded');
+            historyList.querySelectorAll('.history-exchange.expanded').forEach(el => {
+                el.classList.remove('expanded');
+            });
+            if (hadExpanded) {
+                restoreCurrentTurnSnapshot();
+            }
+            updateReadOnlyMode();
+        }
+
+        function saveCurrentTurnSnapshot() {
+            const activityFragment = document.createDocumentFragment();
+            while (activityLog.firstChild) {
+                activityFragment.appendChild(activityLog.firstChild);
+            }
+            currentTurnSnapshot = {
+                welcomeDisplay: welcome.style.display,
+                userMessageDisplay: userMessage.style.display,
+                responseDisplay: response.style.display,
+                userTextContent: userText.textContent,
+                responseHTML: responseText.innerHTML,
+                activityFragment,
+                timingText: timing.textContent,
+            };
+        }
+
+        function showExchangeInMainPanel(exchange) {
+            welcome.style.display = 'none';
+            userMessage.style.display = 'block';
+            response.style.display = 'block';
+            userText.textContent = exchange.human.text;
+            activityLog.innerHTML = '';
+            timing.textContent = '';
+            responseText.innerHTML = exchange.assistant
+                ? marked.parse(exchange.assistant.text)
+                : '';
+        }
+
+        function restoreCurrentTurnSnapshot() {
+            if (!currentTurnSnapshot) return;
+            const snap = currentTurnSnapshot;
+            currentTurnSnapshot = null;
+            welcome.style.display = snap.welcomeDisplay;
+            userMessage.style.display = snap.userMessageDisplay;
+            response.style.display = snap.responseDisplay;
+            userText.textContent = snap.userTextContent;
+            responseText.innerHTML = snap.responseHTML;
+            activityLog.innerHTML = '';
+            activityLog.appendChild(snap.activityFragment);
+            timing.textContent = snap.timingText;
+        }
 
         function buildActivitySummary() {
             const entries = activityLog.querySelectorAll('.activity-entry');
@@ -757,7 +864,7 @@
             }
 
             busy = false;
-            sendBtn.disabled = false;
+            updateReadOnlyMode();
             input.focus();
         }
         // --- History Panel ---
@@ -853,20 +960,31 @@
 
             div.addEventListener('click', () => {
                 const wasExpanded = div.classList.contains('expanded');
-                // Collapse all others
+                const anyExpanded = !!historyList.querySelector('.history-exchange.expanded');
+
+                // Save current turn before first history view
+                if (!anyExpanded && !wasExpanded) {
+                    saveCurrentTurnSnapshot();
+                }
+
+                // Collapse all
                 historyList.querySelectorAll('.history-exchange.expanded').forEach(el => {
                     el.classList.remove('expanded');
                 });
+
                 if (!wasExpanded) {
                     div.classList.add('expanded');
-                    // When expanding, show full human text
                     preview.textContent = exchange.human.text;
+                    showExchangeInMainPanel(exchange);
+                    closeHistoryPanel();
                 } else {
-                    // Re-truncate
+                    // Collapsing — restore the saved turn
                     preview.textContent = exchange.human.text.length > 80
                         ? exchange.human.text.substring(0, 80) + '\u2026'
                         : exchange.human.text;
+                    restoreCurrentTurnSnapshot();
                 }
+                updateReadOnlyMode();
             });
 
             return div;
@@ -903,8 +1021,8 @@
         function toggleHistory() {
             const isOpen = historyPanel.classList.contains('open');
             if (isOpen) {
-                historyPanel.classList.remove('open');
-                historyBackdrop.classList.remove('open');
+                closeHistoryPanel();
+                exitHistoryMode();
             } else {
                 historyPanel.classList.add('open');
                 historyBackdrop.classList.add('open');
@@ -918,6 +1036,10 @@
         historyToggle.addEventListener('click', toggleHistory);
         historyBackdrop.addEventListener('click', toggleHistory);
         document.getElementById('history-close').addEventListener('click', toggleHistory);
+        document.getElementById('history-mode-back').addEventListener('click', () => {
+            exitHistoryMode();
+            closeHistoryPanel();
+        });
 
         // Lazy load on scroll near bottom of history list
         document.getElementById('history-list').addEventListener('scroll', (e) => {
