@@ -1,0 +1,94 @@
+package main
+
+import (
+	"context"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/eikos-io/krisis/internal/config"
+	"github.com/eikos-io/krisis/internal/metis"
+	"github.com/eikos-io/krisis/internal/mimne"
+)
+
+// stderr is a logger that always prints, even when verbose logging is off.
+var stderr = log.New(os.Stderr, "", log.LstdFlags)
+
+func main() {
+	if !strings.EqualFold(os.Getenv("METIS_VERBOSE"), "true") {
+		log.SetOutput(io.Discard)
+	}
+
+	cfg := config.Load()
+
+	// Connect to Postgres
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, cfg.PGConnString())
+	if err != nil {
+		stderr.Fatalf("Failed to connect to Postgres: %v", err)
+	}
+	defer pool.Close()
+
+	// Initialize memory
+	mem := mimne.New(pool, cfg.ONNXModelPath)
+	mem.Init(ctx)
+
+	// Initialize LLM provider
+	var provider metis.Provider
+	if cfg.Provider == "bedrock" {
+		p, err := metis.NewBedrockProvider(cfg)
+		if err != nil {
+			stderr.Fatalf("Failed to create Bedrock provider: %v", err)
+		}
+		provider = p
+	} else {
+		provider = metis.NewAnthropicProvider(cfg)
+	}
+
+	// Build allowed roots for file tools from project config
+	allowedRoots := make(map[string]string)
+	for name, p := range cfg.ProjectPaths {
+		allowedRoots[name] = p
+	}
+	// Merge env var overrides
+	for _, p := range cfg.AllowedPaths {
+		name := filepath.Base(p)
+		allowedRoots[name] = p
+	}
+	if len(allowedRoots) == 0 {
+		stderr.Println("Warning: no project file or ALLOWED_PATHS configured — file tools disabled")
+	}
+
+	toolExec := &metis.ToolExecutor{
+		AllowedRoots: allowedRoots,
+		Memory:       mem,
+		BraveAPIKey:  cfg.BraveAPIKey,
+	}
+
+	engine := &metis.ChatEngine{
+		Provider: provider,
+		Memory:   mem,
+		Tools:    toolExec,
+		Config:   cfg,
+	}
+
+	// Hydrate conversation history from DB
+	engine.HydrateHistory(ctx)
+
+	// Resolve static directory
+	exe, _ := os.Executable()
+	staticDir := filepath.Join(filepath.Dir(exe), "static")
+	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
+		// Fall back to working directory
+		wd, _ := os.Getwd()
+		staticDir = filepath.Join(wd, "static")
+	}
+
+	server := metis.NewServer(engine, pool, mem, staticDir)
+	addr := ":" + cfg.Port
+	stderr.Fatal(server.ListenAndServe(addr))
+}

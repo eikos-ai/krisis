@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# ONNX model binaries
+models/
+
 # Editor/IDE
 # .idea/
 # .vscode/
