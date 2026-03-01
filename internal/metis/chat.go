@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -101,7 +102,7 @@ func stripConfidence(text string) string {
 	return strings.TrimSpace(confidenceStripRe.ReplaceAllString(text, ""))
 }
 
-func buildSystemPrompt(ctx, projectName, projectDesc string) string {
+func buildSystemPrompt(ctx, projectName, projectDesc string, rootNames []string) string {
 	today := time.Now().Format("Monday, January 02, 2006")
 	s := strings.Replace(systemPrompt, "{today}", today, 1)
 
@@ -111,6 +112,9 @@ func buildSystemPrompt(ctx, projectName, projectDesc string) string {
 		if projectDesc != "" {
 			projectBlock += "\n" + projectDesc
 		}
+		if len(rootNames) > 0 {
+			projectBlock += "\nProject roots: " + strings.Join(rootNames, ", ")
+		}
 		projectBlock += "\n"
 	}
 	s = strings.Replace(s, "{project}", projectBlock, 1)
@@ -119,6 +123,15 @@ func buildSystemPrompt(ctx, projectName, projectDesc string) string {
 		ctx = "(No relevant context retrieved.)"
 	}
 	return strings.Replace(s, "{context}", ctx, 1)
+}
+
+func sortedRootNames(paths map[string]string) []string {
+	names := make([]string, 0, len(paths))
+	for name := range paths {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ChatStreaming runs the full chat loop and sends SSE events to the callback.
@@ -131,7 +144,8 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	tMemory := time.Now()
 
 	// 2. Build system prompt
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription)
+	rootNames := sortedRootNames(ce.Config.ProjectPaths)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, rootNames)
 
 	// 3. Build messages: history + current turn
 	messages := make([]map[string]any, len(ce.History))
@@ -320,7 +334,8 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, contentBlocks any) string {
 	// Retrieve memory context
 	memCtx := ce.Memory.GetContext(ctx, userMessage)
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription)
+	rootNames := sortedRootNames(ce.Config.ProjectPaths)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, rootNames)
 
 	messages := make([]map[string]any, len(ce.History))
 	copy(messages, ce.History)

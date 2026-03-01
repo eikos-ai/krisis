@@ -77,7 +77,11 @@ Framework-level learnings (design principles, architectural decisions) decay too
 
 #### Task 20: Fix nondeterministic claude_code working_dir default
 
-In `internal/metis/tools.go`, the `claudeCode` function defaults `working_dir` to the first value from `te.AllowedRoots` when empty. Go maps have random iteration order, so this picks a random project root each time. Fix: look for a root named `"krisis"` first, then fall back to the alphabetically first key. One block to replace.
+Two parts:
+
+**A. Inject project root names into system prompt.** In `buildSystemPrompt` (chat.go), the `{project}` block includes name and description but not the path keys from config. Metis doesn't know the root names, so it guesses paths like `eikos-projects/krisis/BRIEFING.md` instead of `krisis/BRIEFING.md`. Fix: append the root names (keys from `Config.ProjectPaths`) to the project block, e.g. `"Project roots: krisis, test-claude-code"`. The function already receives `cfg` indirectly — thread the path names through.
+
+**B. Fix nondeterministic map iteration for default working_dir.** In `claudeCode` (tools.go), the empty working_dir default takes the first value from `te.AllowedRoots` via map range, which is random in Go. Fix: look for a root named `"krisis"` first, then fall back to alphabetically first key.
 
 ---
 
