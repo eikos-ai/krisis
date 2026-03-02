@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -47,7 +48,7 @@ func (m *Mimne) GetContext(ctx context.Context, userMessage string) string {
 
 	// Extract terms, classify intent, embed
 	terms := ExtractSearchTerms(userMessage)
-	intent := ClassifyIntent(userMessage)
+	intent := classifyQueryType(userMessage)
 	msgEmbedding := m.Embedder.EmbedText(userMessage)
 	vecStr := formatVector(msgEmbedding)
 
@@ -283,6 +284,35 @@ func (m *Mimne) StoreLearning(ctx context.Context, text, source, domain, correct
 			if err == nil {
 				evidenceCount++
 			}
+		}
+	}
+
+	// Detect and commit delta triplets (automatic supersession detection).
+	// Requires a known event node; skip silently if the buffer has no persisted turns.
+	candidates, detErr := m.DetectDeltaTriplets(ctx, newID, 5)
+	if detErr != nil {
+		fmt.Fprintf(os.Stderr, "mimne: DetectDeltaTriplets error for learning %s: %v\n", newID, detErr)
+	} else if len(candidates) > 0 {
+		var eventID string
+		for i := len(recent) - 1; i >= 0; i-- {
+			turn := recent[i]
+			if turn.TurnID != "" {
+				eventID = turn.TurnID
+				break
+			}
+		}
+		if eventID != "" {
+			for _, candidate := range candidates {
+				fmt.Fprintf(os.Stderr, "mimne: attempting delta-triplet: prior=%s new=%s similarity=%.4f correctionSignal=%v\n",
+					candidate.PriorID, newID, candidate.Similarity, candidate.HasCorrectionSignal)
+				_, err := m.CreateDeltaTriplet(ctx, candidate.PriorID, newID, eventID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "mimne: CreateDeltaTriplet failed for prior=%s new=%s: %v\n",
+						candidate.PriorID, newID, err)
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "mimne: delta-triplet candidates found but no event ID in buffer (candidates=%d)\n", len(candidates))
 		}
 	}
 
