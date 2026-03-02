@@ -77,8 +77,9 @@ var executionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(wrote to|edited|read file|executed)\b`),
 }
 
-// ClassifyIntent classifies a user message's intent for retrieval routing.
-func ClassifyIntent(message string) string {
+// classifyQueryType classifies a user message's intent for SQL retrieval routing.
+// Returns one of the intentSlotMap keys: "definitional", "temporal", "causal", "procedural", "default".
+func classifyQueryType(message string) string {
 	for intent, patterns := range intentPatterns {
 		for _, p := range patterns {
 			if p.MatchString(message) {
