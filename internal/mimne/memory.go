@@ -294,7 +294,8 @@ func (m *Mimne) StoreLearning(ctx context.Context, text, source, domain, correct
 		fmt.Fprintf(os.Stderr, "mimne: DetectDeltaTriplets error for learning %s: %v\n", newID, detErr)
 	} else if len(candidates) > 0 {
 		var eventID string
-		for _, turn := range recent {
+		for i := len(recent) - 1; i >= 0; i-- {
+			turn := recent[i]
 			if turn.TurnID != "" {
 				eventID = turn.TurnID
 				break
