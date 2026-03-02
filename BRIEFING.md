@@ -98,26 +98,12 @@ Framework-level learnings (design principles, architectural decisions) decay too
 
 ---
 
-#### Task 20: Fix nondeterministic claude_code working_dir default
 
-Two parts:
-
-**A. Inject project root names into system prompt.** In `buildSystemPrompt` (chat.go), the `{project}` block includes name and description but not the path keys from config. Metis doesn't know the root names, so it guesses paths like `eikos-projects/krisis/BRIEFING.md` instead of `krisis/BRIEFING.md`. Fix: append the root names (keys from `Config.ProjectPaths`) to the project block, e.g. `"Project roots: krisis, test-claude-code"`. The function already receives `cfg` indirectly — thread the path names through.
-
-**B. Fix nondeterministic map iteration for default working_dir.** In `claudeCode` (tools.go), the empty working_dir default takes the first value from `te.AllowedRoots` via map range, which is random in Go. Fix: look for a root named `"krisis"` first, then fall back to alphabetically first key.
-
----
-
-#### Task 19: Fix claude_code working_dir validation
-
-Three bugs exposed when Metis invoked Claude Code without proper scoping:
-
-1. **Empty working_dir bypasses validation.** When `working_dir=""`, `claudeCode()` skips `resolveAndValidate` entirely and Claude Code runs unconstrained. Fix: default to first project root from config when empty.
-2. **No path scoping in Claude Code prompts.** Even with `cmd.Dir` set, Claude Code can `cd` anywhere. Fix: prepend task with `"IMPORTANT: Work only within <dir>. Do not read, write, or explore files outside this directory."`.
-3. **Consider dropping Bash from default allowed tools.** Without Bash, Claude Code can't `cd` or `find` outside working_dir. Read/Write/Edit still accept absolute paths but the model is less likely to wander.
 
 ### Completed
 
+- Task 20: Fix nondeterministic claude_code working_dir default ✅
+- Task 19: Fix claude_code working_dir validation ✅
 - Task 18: Fix claude_code tool — add --verbose flag ✅
 - Task 17: Update system prompt for claude_code tool ✅
 - Task 12: Claude Code headless integration ✅
