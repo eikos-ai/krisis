@@ -56,10 +56,13 @@ func hasCorrectionSignal(text, source, corrects string) bool {
 // DeltaCandidate is a prior learning that a new learning may supersede.
 // Returned by DetectDeltaTriplets for human confirmation before committing.
 type DeltaCandidate struct {
-	PriorID             string  `json:"prior_id"`
-	PriorText           string  `json:"prior_text"`
-	Similarity          float64 `json:"similarity"`
-	HasCorrectionSignal bool    `json:"has_correction_signal"`
+	PriorID   string  `json:"prior_id"`
+	PriorText string  `json:"prior_text"`
+	Similarity float64 `json:"similarity"`
+	// HasCorrectionSignal indicates whether the *new* learning (not this prior)
+	// carries any correction signal (derived from correctionInNew). This value
+	// is therefore the same across all candidates for a given new learning.
+	HasCorrectionSignal bool `json:"has_correction_signal"`
 }
 
 // DeltaTriplet records the three participants of a committed supersession:
