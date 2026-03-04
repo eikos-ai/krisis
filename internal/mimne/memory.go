@@ -14,10 +14,10 @@ import (
 // Mimne is the memory system providing context retrieval, response logging,
 // and learning storage.
 type Mimne struct {
-	Pool           *pgxpool.Pool
-	Session        *Session
-	Embedder       *Embedder
-	LastTrackerID  string // ID of the tracker matched on the previous turn
+	Pool          *pgxpool.Pool
+	Session       *Session
+	Embedder      *Embedder
+	lastTrackerID string // ID of the tracker matched on the previous turn
 }
 
 // New creates a new Mimne instance.
