@@ -197,3 +197,9 @@ Krisis is early-stage software. The core loop — chat, memory retrieval, tool u
 - **Tests**: Test coverage is sparse
 
 Contributions and bug reports are welcome, but expect the codebase to move quickly.
+
+---
+
+## How krisis builds things
+
+Krisis uses a briefing-based coordination pattern between its conversational agent (Metis) and a developer agent (Claude Code). Metis writes task specifications to a local `BRIEFING.md` file, then invokes Claude Code to read the briefing and execute the implementation. The briefing serves as the interface between architectural decisions and code changes. This same pattern is used both to develop krisis itself and to build domain-specific tools on top of it.
