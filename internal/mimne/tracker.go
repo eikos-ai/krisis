@@ -24,7 +24,7 @@ type TrackerContent struct {
 	Subtype    string `json:"subtype"`    // "task" or "discussion"
 	Topic      string `json:"topic"`      // short description
 	Scratchpad string `json:"scratchpad"` // current state, updated each turn
-	Status     string `json:"status"`     // "active", "validating", "resolved"
+	Status     string `json:"status"`     // "active", "validating" (reserved), "resolved"
 }
 
 // TrackerNode is a tracker row returned from queries.
@@ -73,6 +73,8 @@ func (m *Mimne) FindActiveTrackers(ctx context.Context, text string) ([]TrackerN
 		}
 		if tn.Similarity >= TrackerSimThreshold {
 			result = append(result, tn)
+		} else {
+			break
 		}
 	}
 	return result, nil
@@ -162,24 +164,16 @@ func (m *Mimne) CheckTrackerResolution(ctx context.Context, tracker TrackerNode)
 }
 
 // ResolveTracker marks a tracker as resolved and creates a learning node from
-// its final scratchpad, linked via a derived_from edge.
+// its final scratchpad, linked via a derived_from edge. All three DB operations
+// run in a single transaction so the tracker stays active if anything fails.
 func (m *Mimne) ResolveTracker(ctx context.Context, tracker TrackerNode) error {
-	// Update tracker status
+	// Prepare content before starting transaction
 	tracker.Content.Status = "resolved"
 	contentJSON, err := json.Marshal(tracker.Content)
 	if err != nil {
 		return fmt.Errorf("marshal resolved content: %w", err)
 	}
 
-	_, err = m.Pool.Exec(ctx, `
-		UPDATE nodes SET content = $1 WHERE id = $2::uuid`,
-		contentJSON, tracker.ID,
-	)
-	if err != nil {
-		return fmt.Errorf("update tracker status: %w", err)
-	}
-
-	// Create a learning from the final scratchpad
 	source := "status"
 	if tracker.Content.Subtype == "discussion" {
 		source = "decision"
@@ -196,8 +190,25 @@ func (m *Mimne) ResolveTracker(ctx context.Context, tracker TrackerNode) error {
 	vec := m.Embedder.EmbedText(learningText)
 	vecStr := formatVector(vec)
 
+	// Begin transaction
+	tx, err := m.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin resolve transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	// 1. Update tracker status
+	_, err = tx.Exec(ctx, `
+		UPDATE nodes SET content = $1 WHERE id = $2::uuid`,
+		contentJSON, tracker.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update tracker status: %w", err)
+	}
+
+	// 2. Create a learning from the final scratchpad
 	var learningID string
-	err = m.Pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO nodes (id, node_type, content, search_vector, embedding)
 		VALUES (gen_random_uuid(), 'learning', $1,
 		        to_tsvector('english', $2), $3::vector)
@@ -208,14 +219,18 @@ func (m *Mimne) ResolveTracker(ctx context.Context, tracker TrackerNode) error {
 		return fmt.Errorf("create tracker learning: %w", err)
 	}
 
-	// Link learning to tracker via derived_from edge
-	_, err = m.Pool.Exec(ctx, `
+	// 3. Link learning to tracker via derived_from edge
+	_, err = tx.Exec(ctx, `
 		INSERT INTO edges (source_id, target_id, edge_type, edge_status, metadata)
 		VALUES ($1::uuid, $2::uuid, 'derived_from', 'active', '{}')`,
 		learningID, tracker.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("create derived_from edge: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit resolve transaction: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "mimne: resolved tracker %s → learning %s\n", tracker.ID, learningID)

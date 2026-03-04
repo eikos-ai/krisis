@@ -57,50 +57,6 @@ When the user closes the history panel or clicks "Back to current", restore the 
 
 ### Pending
 
-#### Task 22: Tracker nodes — task and discussion tracking in mimne
-
-Mimne needs a new node type `tracker` that tracks the state of active tasks and discussions. This is the mechanism by which conversational agents maintain awareness of what's being worked on and what's been resolved — replacing reliance on BRIEFING.md for status tracking.
-
-**Node structure:**
-- `node_type`: `"tracker"`
-- `content` JSON fields:
-  - `subtype`: `"task"` or `"discussion"`
-  - `topic`: the directive or discussion topic (short description)
-  - `scratchpad`: current state of items/sub-notions, updated each turn. Plain text with inline sub-items, not a nested structure.
-  - `status`: `"active"`, `"validating"`, `"resolved"`
-- `embedding`: embedded from topic + scratchpad combined text
-- `search_vector`: tsvector from topic + scratchpad
-
-**Lifecycle:**
-1. After `LogResponse`, check whether the human+assistant turn pair belongs to an active tracker by embedding the turn pair and comparing cosine similarity to active tracker nodes (status = "active"). Threshold ~0.5 (loose — trackers are broad topics).
-2. If a matching active tracker is found: call the Anthropic API (Haiku for speed) with the current scratchpad + the new turn pair, asking it to return an updated scratchpad. Update the tracker node's content.scratchpad, search_vector, and embedding in place.
-3. If no matching tracker and the human message looks like a directive ("fix X", "implement Y", "let's discuss Z", "what should we do about X"): create a new tracker node with status "active", the topic extracted from the message, and an initial scratchpad from the first turn pair.
-4. If the current turn matches a DIFFERENT tracker than the previous turn's tracker (topic shift detected): check the prior tracker's scratchpad. If the LLM judges all items settled, set status to "resolved" and create a learning node from the final scratchpad text (source="decision" for discussions, source="status" for tasks, domain from context). Link the learning to the tracker via a `derived_from` edge.
-5. If a tracker has been in "active" status with no matching turns for 3+ turn pairs, it's stale — don't auto-resolve, just leave it. The director may come back to it.
-
-**LLM call for scratchpad update:**
-System prompt: "You maintain a scratchpad tracking the state of a task or discussion. Given the current scratchpad and the latest exchange, return ONLY the updated scratchpad. Mark items as (settled), (open), or (dropped). Keep it concise — this is working state, not a report."
-User content: "CURRENT SCRATCHPAD:\n{scratchpad}\n\nLATEST EXCHANGE:\n[human]: {human_text}\n[assistant]: {assistant_text}"
-Model: claude-haiku-4-5-20250929 (or Bedrock equivalent)
-Max tokens: 1000
-
-**LLM call for resolution check:**
-System prompt: "Given this scratchpad for a task/discussion, are all items settled or resolved? Reply with only YES or NO."
-Model: claude-haiku-4-5-20250929
-Max tokens: 10
-
-**Implementation location:**
-- New file: `internal/mimne/tracker.go` — tracker types, create/update/resolve/query functions
-- Modify: `internal/mimne/memory.go` — add `UpdateTrackers(ctx, humanText, assistantText)` method called from `LogResponse` or a new post-response hook
-- The Anthropic API client already exists in `internal/metis/` — reuse or extract the HTTP call logic. The tracker just needs a simple completion call, not streaming.
-
-**What NOT to do:**
-- Don't create sub-nodes for sub-items. The scratchpad is one text field.
-- Don't auto-resolve trackers just because no turns matched recently. Stale is not resolved.
-- Don't make the scratchpad update blocking on the user-facing response. LogResponse is already post-response. The tracker update adds latency only after the user has their answer.
-
----
-
 #### Task 7: Startup port-in-use check
 
 Go Metis should check at startup whether port 8321 is already in use (any protocol/address) and fail loudly if so. This prevents the silent IPv4/IPv6 coexistence that caused a multi-hour debugging detour.
@@ -146,6 +102,8 @@ Framework-level learnings (design principles, architectural decisions) decay too
 
 ### Completed
 
+- Task 23: ResolveTracker transaction + Copilot review fixes ✅
+- Task 22: Tracker nodes — task and discussion tracking in mimne ✅
 - Task 20: Fix nondeterministic claude_code working_dir default ✅
 - Task 19: Fix claude_code working_dir validation ✅
 - Task 18: Fix claude_code tool — add --verbose flag ✅

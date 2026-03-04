@@ -270,11 +270,11 @@ func (m *Mimne) UpdateTrackers(ctx context.Context, humanText, assistantText str
 
 		// Topic shift detection: if the matched tracker differs from the
 		// previous turn's tracker, check whether the prior tracker is resolved.
-		if m.LastTrackerID != "" && m.LastTrackerID != best.ID {
-			m.checkPriorTrackerResolution(ctx, m.LastTrackerID)
+		if m.lastTrackerID != "" && m.lastTrackerID != best.ID {
+			m.checkPriorTrackerResolution(ctx, m.lastTrackerID)
 		}
 
-		m.LastTrackerID = best.ID
+		m.lastTrackerID = best.ID
 		return
 	}
 
@@ -289,7 +289,7 @@ func (m *Mimne) UpdateTrackers(ctx context.Context, humanText, assistantText str
 			fmt.Fprintf(os.Stderr, "mimne: CreateTracker error: %v\n", err)
 			return
 		}
-		m.LastTrackerID = id
+		m.lastTrackerID = id
 	}
 }
 
