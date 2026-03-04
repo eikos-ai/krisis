@@ -14,9 +14,10 @@ import (
 // Mimne is the memory system providing context retrieval, response logging,
 // and learning storage.
 type Mimne struct {
-	Pool     *pgxpool.Pool
-	Session  *Session
-	Embedder *Embedder
+	Pool           *pgxpool.Pool
+	Session        *Session
+	Embedder       *Embedder
+	LastTrackerID  string // ID of the tracker matched on the previous turn
 }
 
 // New creates a new Mimne instance.
@@ -233,6 +234,96 @@ func (m *Mimne) formatContext(results []RetrievalResult, bufferHits []bufferedTu
 func (m *Mimne) LogResponse(ctx context.Context, responseSummary string) {
 	turnID, _ := m.Session.PersistTurn(ctx, "assistant", responseSummary)
 	m.Session.BufferTurn("assistant", responseSummary, turnID)
+
+	// Retrieve the most recent human turn from the buffer for tracker updates.
+	humanText := ""
+	recent := m.Session.RecentBufferTurns(4)
+	for i := len(recent) - 1; i >= 0; i-- {
+		if recent[i].Role == "human" {
+			humanText = recent[i].Text
+			break
+		}
+	}
+	if humanText != "" {
+		m.UpdateTrackers(ctx, humanText, responseSummary)
+	}
+}
+
+// UpdateTrackers checks active trackers against the latest turn pair and
+// creates, updates, or resolves trackers as appropriate.
+func (m *Mimne) UpdateTrackers(ctx context.Context, humanText, assistantText string) {
+	combinedText := humanText + " " + assistantText
+
+	// Find active trackers that match this turn pair
+	trackers, err := m.FindActiveTrackers(ctx, combinedText)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mimne: FindActiveTrackers error: %v\n", err)
+		return
+	}
+
+	if len(trackers) > 0 {
+		// Update the best-matching tracker's scratchpad
+		best := trackers[0]
+		if err := m.UpdateTrackerScratchpad(ctx, best, humanText, assistantText); err != nil {
+			fmt.Fprintf(os.Stderr, "mimne: UpdateTrackerScratchpad error: %v\n", err)
+		}
+
+		// Topic shift detection: if the matched tracker differs from the
+		// previous turn's tracker, check whether the prior tracker is resolved.
+		if m.LastTrackerID != "" && m.LastTrackerID != best.ID {
+			m.checkPriorTrackerResolution(ctx, m.LastTrackerID)
+		}
+
+		m.LastTrackerID = best.ID
+		return
+	}
+
+	// No matching tracker — check if the human message is a directive
+	if isDirective(humanText) {
+		subtype := classifyDirective(humanText)
+		topic := extractTopic(humanText)
+		scratchpad := fmt.Sprintf("[human]: %s\n[assistant]: %s", humanText, assistantText)
+
+		id, err := m.CreateTracker(ctx, subtype, topic, scratchpad)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mimne: CreateTracker error: %v\n", err)
+			return
+		}
+		m.LastTrackerID = id
+	}
+}
+
+// checkPriorTrackerResolution loads a tracker by ID and, if it's still active,
+// asks the LLM whether all items are settled. Resolves if YES.
+func (m *Mimne) checkPriorTrackerResolution(ctx context.Context, trackerID string) {
+	var contentJSON []byte
+	err := m.Pool.QueryRow(ctx, `
+		SELECT content FROM nodes
+		WHERE id = $1::uuid AND node_type = 'tracker' AND content->>'status' = 'active'`,
+		trackerID,
+	).Scan(&contentJSON)
+	if err != nil {
+		return // not found or not active — nothing to do
+	}
+
+	var content TrackerContent
+	if err := json.Unmarshal(contentJSON, &content); err != nil {
+		return
+	}
+
+	tracker := TrackerNode{ID: trackerID, Content: content}
+
+	resolved, err := m.CheckTrackerResolution(ctx, tracker)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mimne: CheckTrackerResolution error for %s: %v\n", trackerID, err)
+		return
+	}
+
+	if resolved {
+		if err := m.ResolveTracker(ctx, tracker); err != nil {
+			fmt.Fprintf(os.Stderr, "mimne: ResolveTracker error for %s: %v\n", trackerID, err)
+		}
+	}
 }
 
 // StoreLearning stores a new learning in mimne memory.
