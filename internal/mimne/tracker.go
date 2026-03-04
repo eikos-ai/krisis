@@ -235,6 +235,7 @@ func isDirective(text string) bool {
 func classifyDirective(text string) string {
 	trimmed := strings.TrimSpace(strings.ToLower(text))
 	if strings.HasPrefix(trimmed, "let's discuss") ||
+		strings.HasPrefix(trimmed, "lets discuss") ||
 		strings.HasPrefix(trimmed, "what should we do about") ||
 		strings.HasPrefix(trimmed, "how should we handle") ||
 		strings.HasPrefix(trimmed, "we need to") {
