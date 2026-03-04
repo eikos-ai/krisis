@@ -247,13 +247,15 @@ func isDirective(text string) bool {
 }
 
 // classifyDirective returns "task" or "discussion" based on the message content.
+// Note: although directiveRe also matches "we need to", we treat such phrases as
+// task-like (e.g., "we need to fix/add/implement ...") and classify them as "task"
+// rather than "discussion".
 func classifyDirective(text string) string {
 	trimmed := strings.TrimSpace(strings.ToLower(text))
 	if strings.HasPrefix(trimmed, "let's discuss") ||
 		strings.HasPrefix(trimmed, "lets discuss") ||
 		strings.HasPrefix(trimmed, "what should we do about") ||
-		strings.HasPrefix(trimmed, "how should we handle") ||
-		strings.HasPrefix(trimmed, "we need to") {
+		strings.HasPrefix(trimmed, "how should we handle") {
 		return "discussion"
 	}
 	return "task"
