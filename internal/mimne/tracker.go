@@ -12,7 +12,7 @@ import (
 // Tracker models
 
 const (
-	TrackerModel    = "claude-haiku-4-5-20250929"
+	TrackerModel = "claude-haiku-4-5-20250929"
 	TrackerSimThreshold = 0.5
 
 	scratchpadSystemPrompt = "You maintain a scratchpad tracking the state of a task or discussion. Given the current scratchpad and the latest exchange, return ONLY the updated scratchpad. Mark items as (settled), (open), or (dropped). Keep it concise — this is working state, not a report."
