@@ -102,6 +102,8 @@ Framework-level learnings (design principles, architectural decisions) decay too
 
 ### Completed
 
+- Task 23: ResolveTracker transaction + Copilot review fixes ✅
+- Task 22: Tracker nodes — task and discussion tracking in mimne ✅
 - Task 20: Fix nondeterministic claude_code working_dir default ✅
 - Task 19: Fix claude_code working_dir validation ✅
 - Task 18: Fix claude_code tool — add --verbose flag ✅
