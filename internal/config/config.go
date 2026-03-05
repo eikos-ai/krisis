@@ -45,6 +45,9 @@ type Config struct {
 	// Embeddings
 	ONNXModelPath string
 
+	// Logging
+	Verbose bool
+
 	// Web search
 	BraveAPIKey string
 }
@@ -72,6 +75,8 @@ func Load() *Config {
 		ProjectFile: os.Getenv("METIS_PROJECT"),
 
 		ONNXModelPath: os.Getenv("ONNX_MODEL_PATH"),
+
+		Verbose: strings.EqualFold(os.Getenv("METIS_VERBOSE"), "true"),
 
 		BraveAPIKey: os.Getenv("BRAVE_API_KEY"),
 	}

@@ -284,7 +284,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		trackerState := ce.Memory.GetLastTrackerState(ctx)
 		planningTrace = ce.runPlanning(ctx, userMessage, memCtx, trackerState)
 		tPlanning = time.Now()
-		if planningTrace != "" {
+		if planningTrace != "" && ce.Config.Verbose {
 			log.Printf("planning: trace=%q", planningTrace)
 		}
 	}
@@ -395,7 +395,6 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		"escalated":         escalated,
 		"escalation_reason": escalationReason,
 		"model":             finalModel,
-		"planning_trace":    planningTrace,
 	}})
 }
 
