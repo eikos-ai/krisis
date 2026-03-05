@@ -20,6 +20,9 @@ type Config struct {
 	ConfidenceThreshold float64
 	EscalationModel     string
 
+	// Planning phase
+	PlanningModel string
+
 	// Postgres
 	PGHost     string
 	PGPort     string
@@ -56,6 +59,7 @@ func Load() *Config {
 
 		ConfidenceThreshold: envFloat("CONFIDENCE_THRESHOLD", 0.7),
 		EscalationModel:     os.Getenv("METIS_MODEL_ESCALATION"),
+		PlanningModel:       envOr("METIS_MODEL_PLANNING", "claude-haiku-4-5-20251001"),
 
 		PGHost:     envOr("PGHOST", "localhost"),
 		PGPort:     envOr("PGPORT", "5432"),
