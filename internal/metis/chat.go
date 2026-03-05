@@ -281,7 +281,10 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	tPlanning := tMemory
 	if ce.Config.PlanningModel != "" {
 		emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Planning..."}})
-		trackerState := ce.Memory.GetLastTrackerState(ctx)
+		trackerState, trackerErr := ce.Memory.GetLastTrackerState(ctx)
+		if trackerErr != nil {
+			log.Printf("planning: tracker state error: %v", trackerErr)
+		}
 		planningTrace = ce.runPlanning(ctx, userMessage, memCtx, trackerState)
 		tPlanning = time.Now()
 		if planningTrace != "" && ce.Config.Verbose {
