@@ -326,6 +326,32 @@ func (m *Mimne) checkPriorTrackerResolution(ctx context.Context, trackerID strin
 	}
 }
 
+// GetLastTrackerState returns a brief summary of the current active tracker
+// (the one matched on the last turn), or empty string if none.
+func (m *Mimne) GetLastTrackerState(ctx context.Context) (string, error) {
+	if m.lastTrackerID == "" {
+		return "", nil
+	}
+	var contentJSON []byte
+	err := m.Pool.QueryRow(ctx, `
+		SELECT content FROM nodes
+		WHERE id = $1::uuid AND node_type = 'tracker' AND content->>'status' = 'active'`,
+		m.lastTrackerID,
+	).Scan(&contentJSON)
+	if err != nil {
+		return "", fmt.Errorf("query tracker %s: %w", m.lastTrackerID, err)
+	}
+	var content TrackerContent
+	if err := json.Unmarshal(contentJSON, &content); err != nil {
+		return "", fmt.Errorf("unmarshal tracker %s: %w", m.lastTrackerID, err)
+	}
+	scratchpad := content.Scratchpad
+	if len(scratchpad) > 500 {
+		scratchpad = scratchpad[:500] + "..."
+	}
+	return fmt.Sprintf("[%s] %s\n%s", content.Subtype, content.Topic, scratchpad), nil
+}
+
 // StoreLearning stores a new learning in mimne memory.
 func (m *Mimne) StoreLearning(ctx context.Context, text, source, domain, corrects string) string {
 	content := map[string]string{

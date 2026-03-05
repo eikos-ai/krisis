@@ -1,10 +1,14 @@
 package metis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,8 +19,21 @@ import (
 	"github.com/eikos-io/krisis/internal/mimne"
 )
 
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 const maxToolRounds = 10
 const maxHistoryTurns = 10
+const planningHistoryTurns = 3
+
+const planningSystemPrompt = `You are a planning assistant for a technical conversation. Given the user's message, retrieved memory context, any active task tracker state, and recent conversation history, reason briefly about your approach for this turn.
+
+Respond with a short reasoning trace (2-5 sentences) covering:
+1. What from memory is directly relevant (or note if nothing applies)
+2. Any gaps — what you'd need to verify or cannot confirm from memory
+3. Your planned approach for this turn
+4. Whether any tools are needed and why
+
+Be concise. This is a gate check, not a response.`
 
 var systemPrompt = `Today is {today}.
 {project}
@@ -134,6 +151,122 @@ func sortedRootNames(paths map[string]string) []string {
 	return names
 }
 
+// planningComplete makes a non-streaming Anthropic API call for the planning phase.
+func planningComplete(ctx context.Context, model, system, userContent string) (string, error) {
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("ANTHROPIC_API_KEY not set")
+	}
+
+	body := map[string]any{
+		"model":      model,
+		"max_tokens": 512,
+		"system":     system,
+		"messages": []map[string]any{
+			{"role": "user", "content": userContent},
+		},
+	}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("anthropic API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+	for _, block := range result.Content {
+		if block.Type == "text" {
+			return strings.TrimSpace(block.Text), nil
+		}
+	}
+	return "", fmt.Errorf("no text content in response")
+}
+
+// runPlanning performs the planning LLM call between retrieval and generation.
+// Returns the reasoning trace, or empty string on failure (non-fatal).
+func (ce *ChatEngine) runPlanning(ctx context.Context, userMessage, memCtx, trackerState string) string {
+	if ce.Config.PlanningModel == "" {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("USER MESSAGE:\n")
+	sb.WriteString(userMessage)
+	sb.WriteString("\n\n")
+
+	if memCtx != "" {
+		sb.WriteString("RETRIEVED MEMORY:\n")
+		sb.WriteString(memCtx)
+	} else {
+		sb.WriteString("RETRIEVED MEMORY:\n(none)")
+	}
+	sb.WriteString("\n\n")
+
+	if trackerState != "" {
+		sb.WriteString("ACTIVE TRACKER:\n")
+		sb.WriteString(trackerState)
+		sb.WriteString("\n\n")
+	}
+
+	// Include last N turns of conversation history
+	start := len(ce.History) - planningHistoryTurns*2
+	if start < 0 {
+		start = 0
+	}
+	if start < len(ce.History) {
+		sb.WriteString("RECENT HISTORY:\n")
+		for _, msg := range ce.History[start:] {
+			role, _ := msg["role"].(string)
+			content, _ := msg["content"].(string)
+			if content == "" {
+				continue
+			}
+			if len(content) > 300 {
+				content = content[:300] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("[%s]: %s\n", role, content))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("Reason about your approach for this turn.")
+
+	trace, err := planningComplete(ctx, ce.Config.PlanningModel, planningSystemPrompt, sb.String())
+	if err != nil {
+		log.Printf("planning: error: %v", err)
+		return ""
+	}
+	return trace
+}
+
 // ChatStreaming runs the full chat loop and sends SSE events to the callback.
 func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, contentBlocks any, emit func(SSEEvent)) {
 	t0 := time.Now()
@@ -143,16 +276,35 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	memCtx := ce.Memory.GetContext(ctx, userMessage)
 	tMemory := time.Now()
 
-	// 2. Build system prompt
+	// 2. Planning phase: reason about approach before generating response
+	planningTrace := ""
+	tPlanning := tMemory
+	if ce.Config.PlanningModel != "" {
+		emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Planning..."}})
+		trackerState, trackerErr := ce.Memory.GetLastTrackerState(ctx)
+		if trackerErr != nil {
+			log.Printf("planning: tracker state error: %v", trackerErr)
+		}
+		planningTrace = ce.runPlanning(ctx, userMessage, memCtx, trackerState)
+		tPlanning = time.Now()
+		if planningTrace != "" && ce.Config.Verbose {
+			log.Printf("planning: trace=%q", planningTrace)
+		}
+	}
+
+	// 3. Build system prompt (with planning trace appended if available)
 	rootNames := sortedRootNames(ce.Config.ProjectPaths)
 	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, rootNames)
+	if planningTrace != "" {
+		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
+	}
 
-	// 3. Build messages: history + current turn
+	// 4. Build messages: history + current turn
 	messages := make([]map[string]any, len(ce.History))
 	copy(messages, ce.History)
 	messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 
-	// 4. Escalation check
+	// 5. Escalation check
 	structuralEscalation, structuralReason := shouldEscalateStructurally(userMessage, memCtx)
 	tools := ce.Provider.GetTools()
 
@@ -179,10 +331,10 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		activeSystem = system + confidenceInstruction
 	}
 
-	// 5. Tool-use loop
+	// 6. Tool-use loop
 	fullText := ce.runToolLoop(ctx, useModel, activeSystem, messages, tools, emit)
 
-	// 6. Confidence-based escalation (Sonnet only)
+	// 7. Confidence-based escalation (Sonnet only)
 	if bufferText && len(fullText) > 0 {
 		rawText := strings.Join(fullText, "")
 		confidence := parseConfidence(rawText)
@@ -208,11 +360,11 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		}
 	}
 
-	// 7. Final text
+	// 8. Final text
 	responseText := strings.Join(fullText, "")
 	emit(SSEEvent{Type: "final_text", Data: map[string]any{"type": "final_text", "text": responseText}})
 
-	// 8. Persist response
+	// 9. Persist response
 	if responseText != "" {
 		summary := responseText
 		if len(summary) > 500 {
@@ -221,7 +373,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		ce.Memory.LogResponse(ctx, summary)
 	}
 
-	// 9. Update ephemeral history
+	// 10. Update ephemeral history
 	ce.History = append(ce.History, map[string]any{"role": "user", "content": userMessage})
 	if responseText != "" {
 		ce.History = append(ce.History, map[string]any{"role": "assistant", "content": responseText})
@@ -230,7 +382,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		ce.History = ce.History[2:]
 	}
 
-	// 10. Done event
+	// 11. Done event
 	tDone := time.Now()
 	finalModel := useModel
 	if escalated {
@@ -239,8 +391,9 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	emit(SSEEvent{Type: "done", Data: map[string]any{
 		"type": "done",
 		"timing": map[string]any{
-			"memory_ms": int(tMemory.Sub(t0).Milliseconds()),
-			"total_ms":  int(tDone.Sub(t0).Milliseconds()),
+			"memory_ms":   int(tMemory.Sub(t0).Milliseconds()),
+			"planning_ms": int(tPlanning.Sub(tMemory).Milliseconds()),
+			"total_ms":    int(tDone.Sub(t0).Milliseconds()),
 		},
 		"escalated":         escalated,
 		"escalation_reason": escalationReason,

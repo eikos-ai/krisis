@@ -20,6 +20,9 @@ type Config struct {
 	ConfidenceThreshold float64
 	EscalationModel     string
 
+	// Planning phase
+	PlanningModel string
+
 	// Postgres
 	PGHost     string
 	PGPort     string
@@ -42,6 +45,9 @@ type Config struct {
 	// Embeddings
 	ONNXModelPath string
 
+	// Logging
+	Verbose bool
+
 	// Web search
 	BraveAPIKey string
 }
@@ -56,6 +62,7 @@ func Load() *Config {
 
 		ConfidenceThreshold: envFloat("CONFIDENCE_THRESHOLD", 0.7),
 		EscalationModel:     os.Getenv("METIS_MODEL_ESCALATION"),
+		PlanningModel:       envOr("METIS_MODEL_PLANNING", "claude-haiku-4-5-20251001"),
 
 		PGHost:     envOr("PGHOST", "localhost"),
 		PGPort:     envOr("PGPORT", "5432"),
@@ -68,6 +75,8 @@ func Load() *Config {
 		ProjectFile: os.Getenv("METIS_PROJECT"),
 
 		ONNXModelPath: os.Getenv("ONNX_MODEL_PATH"),
+
+		Verbose: strings.EqualFold(os.Getenv("METIS_VERBOSE"), "true"),
 
 		BraveAPIKey: os.Getenv("BRAVE_API_KEY"),
 	}
