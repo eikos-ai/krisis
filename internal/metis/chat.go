@@ -275,12 +275,16 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	tMemory := time.Now()
 
 	// 2. Planning phase: reason about approach before generating response
-	emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Planning..."}})
-	trackerState := ce.Memory.GetLastTrackerState(ctx)
-	planningTrace := ce.runPlanning(ctx, userMessage, memCtx, trackerState)
-	tPlanning := time.Now()
-	if planningTrace != "" {
-		log.Printf("planning: trace=%q", planningTrace)
+	planningTrace := ""
+	tPlanning := tMemory
+	if ce.Config.PlanningModel != "" {
+		emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Planning..."}})
+		trackerState := ce.Memory.GetLastTrackerState(ctx)
+		planningTrace = ce.runPlanning(ctx, userMessage, memCtx, trackerState)
+		tPlanning = time.Now()
+		if planningTrace != "" {
+			log.Printf("planning: trace=%q", planningTrace)
+		}
 	}
 
 	// 3. Build system prompt (with planning trace appended if available)
