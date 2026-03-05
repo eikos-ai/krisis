@@ -19,6 +19,8 @@ import (
 	"github.com/eikos-io/krisis/internal/mimne"
 )
 
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 const maxToolRounds = 10
 const maxHistoryTurns = 10
 const planningHistoryTurns = 3
@@ -177,7 +179,7 @@ func planningComplete(ctx context.Context, model, system, userContent string) (s
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("send request: %w", err)
 	}
@@ -187,7 +189,7 @@ func planningComplete(ctx context.Context, model, system, userContent string) (s
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("anthropic API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
