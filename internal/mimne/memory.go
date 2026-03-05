@@ -345,7 +345,11 @@ func (m *Mimne) GetLastTrackerState(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(contentJSON, &content); err != nil {
 		return "", fmt.Errorf("unmarshal tracker %s: %w", m.lastTrackerID, err)
 	}
-	return fmt.Sprintf("[%s] %s\n%s", content.Subtype, content.Topic, content.Scratchpad), nil
+	scratchpad := content.Scratchpad
+	if len(scratchpad) > 500 {
+		scratchpad = scratchpad[:500] + "..."
+	}
+	return fmt.Sprintf("[%s] %s\n%s", content.Subtype, content.Topic, scratchpad), nil
 }
 
 // StoreLearning stores a new learning in mimne memory.
