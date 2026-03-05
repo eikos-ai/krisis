@@ -34,3 +34,8 @@ models/
 # .idea/
 # .vscode/
 BRIEFING.md
+
+
+BRIEFING-v*.md
+archive/
+watch-briefing.sh
