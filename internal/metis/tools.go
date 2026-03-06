@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -130,6 +132,22 @@ func canonicalTools() []map[string]any {
 				"required": []string{"task"},
 			},
 		},
+		{
+			"name":        "update_briefing",
+			"description": "Structured editing tool for BRIEFING.md. Supports three operations: add_task (append a new task to Pending), move_task (move a task between Pending/Validating/Completed), and update_context (replace the Current State section). This is the only way to modify BRIEFING.md.",
+			"input_schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"operation":   map[string]any{"type": "string", "enum": []string{"add_task", "move_task", "update_context"}, "description": "Operation to perform"},
+					"title":       map[string]any{"type": "string", "description": "Task title (add_task only)"},
+					"description": map[string]any{"type": "string", "description": "Task description body (add_task only)"},
+					"task_number": map[string]any{"type": "integer", "description": "Task number to move (move_task only)"},
+					"to_section":  map[string]any{"type": "string", "enum": []string{"pending", "validating", "completed"}, "description": "Target section (move_task only)"},
+					"context":     map[string]any{"type": "string", "description": "New content for the Current State section (update_context only)"},
+				},
+				"required": []string{"operation"},
+			},
+		},
 	}
 }
 
@@ -185,11 +203,11 @@ func (te *ToolExecutor) resolveAndValidate(pathStr string, write bool) (string, 
 			case "mimne":
 				return resolved, nil // full access
 			default:
-				// metis, krisis: write only BRIEFING.md
+				// BRIEFING.md is only modifiable via the update_briefing tool
 				if filepath.Base(resolved) == "BRIEFING.md" {
-					return resolved, nil
+					return "", fmt.Errorf("access denied: use the update_briefing tool to modify BRIEFING.md")
 				}
-				return "", fmt.Errorf("access denied: only BRIEFING.md can be written in %s. Got: %s", name, filepath.Base(resolved))
+				return "", fmt.Errorf("access denied: write not permitted in %s. Got: %s", name, filepath.Base(resolved))
 			}
 		}
 	}
@@ -227,6 +245,17 @@ func DescribeToolUse(toolName string, toolInput map[string]any) string {
 			task = task[:60] + "…"
 		}
 		return fmt.Sprintf("Claude Code: %s", task)
+	case "update_briefing":
+		op := getString(toolInput, "operation")
+		switch op {
+		case "add_task":
+			return fmt.Sprintf("Briefing: adding task %q...", getString(toolInput, "title"))
+		case "move_task":
+			return fmt.Sprintf("Briefing: moving task %v to %s...", toolInput["task_number"], getString(toolInput, "to_section"))
+		case "update_context":
+			return "Briefing: updating context..."
+		}
+		return "Updating briefing..."
 	}
 	return toolName + "..."
 }
@@ -286,6 +315,12 @@ func (te *ToolExecutor) ExecuteTool(ctx context.Context, name string, input map[
 		result := te.claudeCode(ctx, getString(input, "task"), getString(input, "session_id"),
 			getString(input, "allowed_tools"), getString(input, "working_dir"))
 		log.Printf("tool: claude_code result=ok (%d bytes)", len(result))
+		return result
+	case "update_briefing":
+		op := getString(input, "operation")
+		log.Printf("tool: update_briefing operation=%q", op)
+		result := te.updateBriefing(op, input)
+		log.Printf("tool: update_briefing result=%s", result)
 		return result
 	default:
 		log.Printf("tool: unknown tool=%q", name)
@@ -581,6 +616,226 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, sessionID, allowed
 
 	out, _ := json.MarshalIndent(resp, "", "  ")
 	return string(out)
+}
+
+// findBriefingPath locates BRIEFING.md in the allowed roots.
+func (te *ToolExecutor) findBriefingPath() (string, error) {
+	for _, root := range te.AllowedRoots {
+		p := filepath.Join(root, "BRIEFING.md")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("BRIEFING.md not found in any allowed root")
+}
+
+func (te *ToolExecutor) updateBriefing(operation string, input map[string]any) string {
+	briefPath, err := te.findBriefingPath()
+	if err != nil {
+		return fmt.Sprintf("Error: %s", err)
+	}
+
+	data, err := os.ReadFile(briefPath)
+	if err != nil {
+		return fmt.Sprintf("Error: cannot read BRIEFING.md: %s", err)
+	}
+	content := string(data)
+
+	var newContent string
+	switch operation {
+	case "add_task":
+		title := getString(input, "title")
+		desc := getString(input, "description")
+		if title == "" {
+			return "Error: title is required for add_task"
+		}
+		newContent, err = briefingAddTask(content, title, desc)
+	case "move_task":
+		taskNum, ok := input["task_number"].(float64)
+		if !ok {
+			return "Error: task_number is required for move_task"
+		}
+		toSection := getString(input, "to_section")
+		if toSection == "" {
+			return "Error: to_section is required for move_task"
+		}
+		newContent, err = briefingMoveTask(content, int(taskNum), toSection)
+	case "update_context":
+		ctx := getString(input, "context")
+		if ctx == "" {
+			return "Error: context is required for update_context"
+		}
+		newContent, err = briefingUpdateContext(content, ctx)
+	default:
+		return fmt.Sprintf("Error: unknown operation: %s", operation)
+	}
+
+	if err != nil {
+		return fmt.Sprintf("Error: %s", err)
+	}
+
+	if err := os.WriteFile(briefPath, []byte(newContent), 0o644); err != nil {
+		return fmt.Sprintf("Error: cannot write BRIEFING.md: %s", err)
+	}
+	return fmt.Sprintf("BRIEFING.md updated (%s)", operation)
+}
+
+// briefingFindMaxTask scans for the highest task number in the file.
+func briefingFindMaxTask(content string) int {
+	re := regexp.MustCompile(`#### Task (\d+):`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	max := 0
+	for _, m := range matches {
+		n, _ := strconv.Atoi(m[1])
+		if n > max {
+			max = n
+		}
+	}
+	// Also check completed tasks (one-line format)
+	reLine := regexp.MustCompile(`- Task (\d+):`)
+	for _, m := range reLine.FindAllStringSubmatch(content, -1) {
+		n, _ := strconv.Atoi(m[1])
+		if n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+func briefingAddTask(content, title, description string) (string, error) {
+	// Find the end of the Pending section (just before ### Validating)
+	validatingIdx := strings.Index(content, "\n### Validating")
+	if validatingIdx == -1 {
+		return "", fmt.Errorf("cannot find ### Validating section")
+	}
+
+	nextNum := briefingFindMaxTask(content) + 1
+	taskBlock := fmt.Sprintf("#### Task %d: %s\n\n%s\n\n---\n\n", nextNum, title, description)
+
+	return content[:validatingIdx] + "\n" + taskBlock + content[validatingIdx+1:], nil
+}
+
+func briefingMoveTask(content string, taskNum int, toSection string) (string, error) {
+	// Match both full task blocks (#### Task N: ...) and completed one-liners (- Task N: ...)
+	taskHeader := fmt.Sprintf("#### Task %d:", taskNum)
+	taskOneLiner := fmt.Sprintf("- Task %d:", taskNum)
+
+	var taskText string
+	var newContent string
+
+	if idx := strings.Index(content, taskHeader); idx != -1 {
+		// Full task block — extract until next #### or ### or end of section
+		rest := content[idx:]
+		// Find the end: next "---\n" separator followed by content, or next ### heading
+		endMarkers := []string{"\n---\n\n####", "\n---\n\n\n", "\n### "}
+		endIdx := len(rest)
+		for _, marker := range endMarkers {
+			if i := strings.Index(rest, marker); i != -1 && i < endIdx {
+				// Include the --- separator in what we remove
+				endIdx = i + strings.Index(marker, "\n#") // stop before the next heading
+				if strings.HasPrefix(marker, "\n---\n\n\n") {
+					endIdx = i + len("\n---\n\n")
+				} else if strings.HasPrefix(marker, "\n---\n\n####") {
+					endIdx = i + len("\n---\n\n")
+				} else {
+					endIdx = i + 1
+				}
+			}
+		}
+		// If this is the last task before a section heading, include trailing ---
+		taskText = strings.TrimSpace(rest[:endIdx])
+		// Remove the task block from content
+		before := content[:idx]
+		after := content[idx+endIdx:]
+		// Clean up extra blank lines
+		newContent = strings.TrimRight(before, "\n") + "\n\n" + strings.TrimLeft(after, "\n")
+	} else if idx := strings.Index(content, taskOneLiner); idx != -1 {
+		// One-liner format (in Completed section)
+		lineEnd := strings.Index(content[idx:], "\n")
+		if lineEnd == -1 {
+			lineEnd = len(content[idx:])
+		}
+		taskText = strings.TrimSpace(content[idx : idx+lineEnd])
+		before := content[:idx]
+		after := content[idx+lineEnd:]
+		newContent = strings.TrimRight(before, "\n") + "\n" + strings.TrimLeft(after, "\n")
+	} else {
+		return "", fmt.Errorf("Task %d not found", taskNum)
+	}
+
+	// Extract just the title from the task text for one-liner format
+	var taskTitle string
+	if strings.HasPrefix(taskText, "####") {
+		// Extract title from "#### Task N: Title"
+		re := regexp.MustCompile(`#### Task \d+: (.+)`)
+		if m := re.FindStringSubmatch(taskText); m != nil {
+			taskTitle = m[1]
+		}
+	} else if strings.HasPrefix(taskText, "- Task") {
+		re := regexp.MustCompile(`- Task \d+: (.+?)(?:\s*✅.*)?$`)
+		if m := re.FindStringSubmatch(taskText); m != nil {
+			taskTitle = m[1]
+		}
+	}
+
+	// Insert into target section
+	switch toSection {
+	case "pending":
+		marker := "\n### Validating"
+		idx := strings.Index(newContent, marker)
+		if idx == -1 {
+			return "", fmt.Errorf("cannot find ### Validating section")
+		}
+		insert := taskText + "\n\n---\n\n"
+		newContent = newContent[:idx] + "\n" + insert + newContent[idx+1:]
+	case "validating":
+		marker := "\n### Completed"
+		idx := strings.Index(newContent, marker)
+		if idx == -1 {
+			return "", fmt.Errorf("cannot find ### Completed section")
+		}
+		// For validating, keep as full block or convert to one-liner
+		insert := taskText + "\n\n"
+		newContent = newContent[:idx] + "\n" + insert + newContent[idx+1:]
+	case "completed":
+		// Append as a one-liner with date to the Completed section
+		completedMarker := "### Completed\n"
+		idx := strings.Index(newContent, completedMarker)
+		if idx == -1 {
+			return "", fmt.Errorf("cannot find ### Completed section")
+		}
+		insertIdx := idx + len(completedMarker)
+		// Skip any blank line after the header
+		if insertIdx < len(newContent) && newContent[insertIdx] == '\n' {
+			insertIdx++
+		}
+		today := time.Now().Format("2006-01-02")
+		line := fmt.Sprintf("- Task %d: %s ✅ %s\n", taskNum, taskTitle, today)
+		newContent = newContent[:insertIdx] + line + newContent[insertIdx:]
+	default:
+		return "", fmt.Errorf("invalid section: %s", toSection)
+	}
+
+	return newContent, nil
+}
+
+func briefingUpdateContext(content, newContext string) (string, error) {
+	// Find "## Current State" section and replace its content up to the next ## heading
+	startMarker := "## Current State\n"
+	startIdx := strings.Index(content, startMarker)
+	if startIdx == -1 {
+		return "", fmt.Errorf("cannot find ## Current State section")
+	}
+	contentStart := startIdx + len(startMarker)
+
+	// Find next ## heading
+	rest := content[contentStart:]
+	nextSection := strings.Index(rest, "\n## ")
+	if nextSection == -1 {
+		return "", fmt.Errorf("cannot find section after Current State")
+	}
+
+	return content[:contentStart] + "\n" + newContext + "\n" + content[contentStart+nextSection:], nil
 }
 
 func getString(m map[string]any, key string) string {
