@@ -50,7 +50,7 @@ func BuildRetrievalSQL(intent string) string {
 	case "procedural":
 		sourceBoost = "\n                * CASE WHEN n.content->>'source' = 'debugging' THEN 1.5 ELSE 1.0 END"
 	case "temporal":
-		// Boost learnings that record failures, corrections, or decisions — the most
+		// Boost learnings that record corrections, decisions, or debugging — the most
 		// likely sources for answering historical "what went wrong before..." style queries.
 		sourceBoost = "\n                * CASE WHEN n.content->>'source' IN ('correction', 'decision', 'debugging') THEN 1.3 ELSE 1.0 END"
 	default:
