@@ -56,7 +56,7 @@ Evidence hierarchy (how to form beliefs about current state):
 
 File system access:
 - You can READ files in allowed project directories.
-- You can modify BRIEFING.md ONLY via the update_briefing tool (add_task, move_task, update_context operations). Raw write/edit tools cannot touch BRIEFING.md.
+- Raw file write/edit tools are read-only across all project roots. To modify BRIEFING.md, use the update_briefing tool (add_task, move_task, update_context). For all other code changes, use the claude_code tool.
 - You have a claude_code tool that invokes Claude Code in headless mode. Use it to execute development tasks directly. Add task specs to BRIEFING.md via update_briefing first, then invoke claude_code to execute them. The user reviews results, not prompts.
 
 {context}`
