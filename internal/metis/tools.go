@@ -198,17 +198,16 @@ func (te *ToolExecutor) resolveAndValidate(pathStr string, write bool) (string, 
 			if !write {
 				return resolved, nil
 			}
-			// Write access rules depend on the project
-			switch name {
-			case "mimne":
-				return resolved, nil // full access
-			default:
-				// BRIEFING.md is only modifiable via the update_briefing tool
+			// Write access: only krisis root allows writes (excluding BRIEFING.md).
+			// mimne root has no write access — Metis should never write to mimne.
+			// All other roots deny writes entirely.
+			if name == "krisis" {
 				if filepath.Base(resolved) == "BRIEFING.md" {
 					return "", fmt.Errorf("access denied: use the update_briefing tool to modify BRIEFING.md")
 				}
-				return "", fmt.Errorf("access denied: write not permitted in %s. Got: %s", name, filepath.Base(resolved))
+				return resolved, nil
 			}
+			return "", fmt.Errorf("access denied: write not permitted in %s. Got: %s", name, filepath.Base(resolved))
 		}
 	}
 
@@ -655,6 +654,9 @@ func (te *ToolExecutor) updateBriefing(operation string, input map[string]any) s
 		if !ok {
 			return "Error: task_number is required for move_task"
 		}
+		if taskNum != float64(int(taskNum)) || taskNum <= 0 {
+			return fmt.Sprintf("Error: task_number must be a positive integer, got %v", taskNum)
+		}
 		toSection := getString(input, "to_section")
 		if toSection == "" {
 			return "Error: to_section is required for move_task"
@@ -777,6 +779,10 @@ func briefingMoveTask(content string, taskNum int, toSection string) (string, er
 			taskTitle = m[1]
 		}
 	}
+
+	// Strip any trailing "---" separator from extracted task text to prevent duplicates
+	taskText = strings.TrimSuffix(strings.TrimSpace(taskText), "---")
+	taskText = strings.TrimSpace(taskText)
 
 	// Insert into target section
 	switch toSection {
