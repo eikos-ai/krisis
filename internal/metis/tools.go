@@ -198,14 +198,14 @@ func (te *ToolExecutor) resolveAndValidate(pathStr string, write bool) (string, 
 			if !write {
 				return resolved, nil
 			}
-			// Write access: only krisis root allows writes (excluding BRIEFING.md).
-			// mimne root has no write access — Metis should never write to mimne.
+			// Write access: krisis root denies all raw writes (use update_briefing or claude_code).
+			// mimne and metis roots are read-only.
 			// All other roots deny writes entirely.
 			if name == "krisis" {
 				if filepath.Base(resolved) == "BRIEFING.md" {
 					return "", fmt.Errorf("access denied: use the update_briefing tool to modify BRIEFING.md")
 				}
-				return resolved, nil
+				return "", fmt.Errorf("access denied: use Claude Code via the claude_code tool to modify files in %s", name)
 			}
 			return "", fmt.Errorf("access denied: write not permitted in %s. Got: %s", name, filepath.Base(resolved))
 		}
@@ -676,7 +676,11 @@ func (te *ToolExecutor) updateBriefing(operation string, input map[string]any) s
 		return fmt.Sprintf("Error: %s", err)
 	}
 
-	if err := os.WriteFile(briefPath, []byte(newContent), 0o644); err != nil {
+	perm := os.FileMode(0o644)
+	if info, err := os.Stat(briefPath); err == nil {
+		perm = info.Mode().Perm()
+	}
+	if err := os.WriteFile(briefPath, []byte(newContent), perm); err != nil {
 		return fmt.Sprintf("Error: cannot write BRIEFING.md: %s", err)
 	}
 	return fmt.Sprintf("BRIEFING.md updated (%s)", operation)
@@ -780,9 +784,15 @@ func briefingMoveTask(content string, taskNum int, toSection string) (string, er
 		}
 	}
 
-	// Strip any trailing "---" separator from extracted task text to prevent duplicates
-	taskText = strings.TrimSuffix(strings.TrimSpace(taskText), "---")
-	taskText = strings.TrimSpace(taskText)
+	// Strip any trailing "---" separator from extracted task text to prevent duplicates.
+	// Use TrimRight instead of TrimSpace to preserve internal newlines the separator logic depends on.
+	taskText = strings.TrimRight(taskText, " \t\r\n")
+	taskText = strings.TrimSuffix(taskText, "---")
+	taskText = strings.TrimRight(taskText, " \t\r\n")
+
+	if toSection == "completed" && strings.TrimSpace(taskTitle) == "" {
+		return "", fmt.Errorf("cannot extract title for Task %d", taskNum)
+	}
 
 	// Insert into target section
 	switch toSection {
