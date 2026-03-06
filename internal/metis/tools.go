@@ -786,7 +786,9 @@ func briefingMoveTask(content string, taskNum int, toSection string) (string, er
 		if idx == -1 {
 			return "", fmt.Errorf("cannot find ### Validating section")
 		}
-		insert := taskText + "\n\n---\n\n"
+		sep := "\n\n---\n\n"
+		taskText = strings.TrimSuffix(taskText, sep)
+		insert := taskText + sep
 		newContent = newContent[:idx] + "\n" + insert + newContent[idx+1:]
 	case "validating":
 		marker := "\n### Completed"
