@@ -4,20 +4,23 @@ import "fmt"
 
 // intentSlots defines how many results of each type to retrieve per intent.
 type intentSlots struct {
-	L      int // learning slots
-	R      int // reinforced chunk slots
-	RC     int // recent chunk slots
-	RL     int // recent learning slots
-	RCDays int // recent chunk recency window
-	RLDays int // recent learning recency window
+	L                 int     // learning slots
+	R                 int     // reinforced chunk slots
+	RC                int     // recent chunk slots
+	RL                int     // recent learning slots
+	RCDays            int     // recent chunk recency window
+	RLDays            int     // recent learning recency window
+	LearningDecayDays float64 // decay baseline in days for learning recency scoring
 }
 
 var intentSlotMap = map[string]intentSlots{
-	"definitional": {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
-	"temporal":     {L: 2, R: 2, RC: 6, RL: 4, RCDays: 14, RLDays: 30},
-	"causal":       {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
-	"procedural":   {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
-	"default":      {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
+	"definitional": {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30},
+	// Temporal queries ask about historical events: disable recency decay for learnings
+	// (LearningDecayDays=3650) and open recent_learning_slots to all history (RLDays=36500).
+	"temporal":   {L: 6, R: 2, RC: 6, RL: 4, RCDays: 14, RLDays: 36500, LearningDecayDays: 3650},
+	"causal":     {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30},
+	"procedural": {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30},
+	"default":    {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30},
 }
 
 // RetrievalResult represents a single result from the retrieval query.
@@ -44,6 +47,10 @@ func BuildRetrievalSQL(intent string) string {
 		sourceBoost = "\n                * CASE WHEN n.content->>'source' IN ('correction', 'decision') THEN 1.5 ELSE 1.0 END"
 	case "procedural":
 		sourceBoost = "\n                * CASE WHEN n.content->>'source' = 'debugging' THEN 1.5 ELSE 1.0 END"
+	case "temporal":
+		// Boost learnings that record failures, corrections, or decisions — the most
+		// likely sources for historical causal queries ("what went wrong before...").
+		sourceBoost = "\n                * CASE WHEN n.content->>'source' IN ('correction', 'decision', 'debugging') THEN 1.3 ELSE 1.0 END"
 	default:
 		sourceBoost = ""
 	}
@@ -63,7 +70,7 @@ WITH q AS (SELECT to_tsquery('english', $1) AS query)
                 * (1.0 + ln(1.0 + LEAST(COALESCE(n.access_count, 0), 10)))
                 * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - n.created_at))
                     / 86400.0
-                    / (30.0 * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
+                    / (%.1f * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
             AS score,
             0.0 AS semantic_score
         FROM nodes n, q
@@ -104,7 +111,7 @@ WITH q AS (SELECT to_tsquery('english', $1) AS query)
                 * (1.0 + ln(1.0 + LEAST(COALESCE(n.access_count, 0), 10)))
                 * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - n.created_at))
                     / 86400.0
-                    / (30.0 * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
+                    / (%.1f * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
             AS score,
             (1.0 - (n.embedding <=> $2::vector)) AS semantic_score
         FROM nodes n
@@ -186,7 +193,7 @@ UNION ALL
 SELECT id, result_type, text, conversation, score, grounded FROM recent_slots
 UNION ALL
 SELECT id, result_type, text, conversation, score, grounded FROM recent_learning_slots
-`, sourceBoost, sourceBoost, s.L, s.R, s.RCDays, s.RC, s.RLDays, s.RL)
+`, s.LearningDecayDays, sourceBoost, s.LearningDecayDays, sourceBoost, s.L, s.R, s.RCDays, s.RC, s.RLDays, s.RL)
 }
 
 const reinforceSQL = `
