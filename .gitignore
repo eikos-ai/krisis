@@ -39,3 +39,6 @@ BRIEFING.md
 BRIEFING-v*.md
 archive/
 watch-briefing.sh
+
+.DS_Store
+
