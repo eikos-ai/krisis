@@ -4,20 +4,25 @@ import "fmt"
 
 // intentSlots defines how many results of each type to retrieve per intent.
 type intentSlots struct {
-	L      int // learning slots
-	R      int // reinforced chunk slots
-	RC     int // recent chunk slots
-	RL     int // recent learning slots
-	RCDays int // recent chunk recency window
-	RLDays int // recent learning recency window
+	L                 int     // learning slots
+	R                 int     // reinforced chunk slots
+	RC                int     // recent chunk slots
+	RL                int     // recent learning slots
+	RCDays            int     // recent chunk recency window
+	RLDays            int     // recent learning recency window
+	LearningDecayDays float64 // decay baseline in days for learning recency scoring
+	ChunkDecayDays    float64 // decay baseline in days for chunk recency scoring
 }
 
 var intentSlotMap = map[string]intentSlots{
-	"definitional": {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
-	"temporal":     {L: 2, R: 2, RC: 6, RL: 4, RCDays: 14, RLDays: 30},
-	"causal":       {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
-	"procedural":   {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
-	"default":      {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14},
+	"definitional": {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
+	// Temporal queries ask about historical events: greatly reduce recency decay for learnings
+	// (LearningDecayDays=3650 ≈ 10 years) and expand recent_learning_slots to a long but bounded history (RLDays=3650 ≈ 10 years).
+	// ChunkDecayDays also set to 3650 so old chunks are not penalized relative to learnings.
+	"temporal":   {L: 6, R: 2, RC: 6, RL: 4, RCDays: 14, RLDays: 3650, LearningDecayDays: 3650, ChunkDecayDays: 3650},
+	"causal":     {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
+	"procedural": {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
+	"default":    {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
 }
 
 // RetrievalResult represents a single result from the retrieval query.
@@ -44,6 +49,10 @@ func BuildRetrievalSQL(intent string) string {
 		sourceBoost = "\n                * CASE WHEN n.content->>'source' IN ('correction', 'decision') THEN 1.5 ELSE 1.0 END"
 	case "procedural":
 		sourceBoost = "\n                * CASE WHEN n.content->>'source' = 'debugging' THEN 1.5 ELSE 1.0 END"
+	case "temporal":
+		// Boost learnings that record corrections, decisions, or debugging — the most
+		// likely sources for answering historical "what went wrong before..." style queries.
+		sourceBoost = "\n                * CASE WHEN n.content->>'source' IN ('correction', 'decision', 'debugging') THEN 1.3 ELSE 1.0 END"
 	default:
 		sourceBoost = ""
 	}
@@ -63,7 +72,7 @@ WITH q AS (SELECT to_tsquery('english', $1) AS query)
                 * (1.0 + ln(1.0 + LEAST(COALESCE(n.access_count, 0), 10)))
                 * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - n.created_at))
                     / 86400.0
-                    / (30.0 * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
+                    / (%.1f * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
             AS score,
             0.0 AS semantic_score
         FROM nodes n, q
@@ -82,7 +91,7 @@ WITH q AS (SELECT to_tsquery('english', $1) AS query)
                 * (1.0 + ln(1.0 + LEAST(COALESCE(ch.access_count, 0), 10)))
                 * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - ch.created_at))
                     / 86400.0
-                    / (30.0 * GREATEST(1, LEAST(COALESCE(ch.access_count, 0), 10))))))
+                    / (%.1f * GREATEST(1, LEAST(COALESCE(ch.access_count, 0), 10))))))
             AS score,
             0.0 AS semantic_score
         FROM nodes ch
@@ -104,7 +113,7 @@ WITH q AS (SELECT to_tsquery('english', $1) AS query)
                 * (1.0 + ln(1.0 + LEAST(COALESCE(n.access_count, 0), 10)))
                 * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - n.created_at))
                     / 86400.0
-                    / (30.0 * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
+                    / (%.1f * GREATEST(1, LEAST(COALESCE(n.access_count, 0), 10)))))%s
             AS score,
             (1.0 - (n.embedding <=> $2::vector)) AS semantic_score
         FROM nodes n
@@ -125,7 +134,7 @@ WITH q AS (SELECT to_tsquery('english', $1) AS query)
                 * (1.0 + ln(1.0 + LEAST(COALESCE(ch.access_count, 0), 10)))
                 * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - ch.created_at))
                     / 86400.0
-                    / (30.0 * GREATEST(1, LEAST(COALESCE(ch.access_count, 0), 10))))))
+                    / (%.1f * GREATEST(1, LEAST(COALESCE(ch.access_count, 0), 10))))))
             AS score,
             (1.0 - (ch.embedding <=> $2::vector)) AS semantic_score
         FROM nodes ch
@@ -186,7 +195,7 @@ UNION ALL
 SELECT id, result_type, text, conversation, score, grounded FROM recent_slots
 UNION ALL
 SELECT id, result_type, text, conversation, score, grounded FROM recent_learning_slots
-`, sourceBoost, sourceBoost, s.L, s.R, s.RCDays, s.RC, s.RLDays, s.RL)
+`, s.LearningDecayDays, sourceBoost, s.ChunkDecayDays, s.LearningDecayDays, sourceBoost, s.ChunkDecayDays, s.L, s.R, s.RCDays, s.RC, s.RLDays, s.RL)
 }
 
 const reinforceSQL = `
