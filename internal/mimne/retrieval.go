@@ -17,9 +17,9 @@ type intentSlots struct {
 var intentSlotMap = map[string]intentSlots{
 	"definitional": {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
 	// Temporal queries ask about historical events: greatly reduce recency decay for learnings
-	// (LearningDecayDays=3650 ≈ 10 years) and expand recent_learning_slots to long history (RLDays=36500 ≈ 100 years).
+	// (LearningDecayDays=3650 ≈ 10 years) and expand recent_learning_slots to a long but bounded history (RLDays=3650 ≈ 10 years).
 	// ChunkDecayDays also set to 3650 so old chunks are not penalized relative to learnings.
-	"temporal":   {L: 6, R: 2, RC: 6, RL: 4, RCDays: 14, RLDays: 36500, LearningDecayDays: 3650, ChunkDecayDays: 3650},
+	"temporal":   {L: 6, R: 2, RC: 6, RL: 4, RCDays: 14, RLDays: 3650, LearningDecayDays: 3650, ChunkDecayDays: 3650},
 	"causal":     {L: 8, R: 2, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
 	"procedural": {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
 	"default":    {L: 6, R: 4, RC: 2, RL: 2, RCDays: 7, RLDays: 14, LearningDecayDays: 30, ChunkDecayDays: 30},
