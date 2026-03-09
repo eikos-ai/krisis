@@ -1,12 +1,13 @@
 package metis
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,18 +21,18 @@ type Server struct {
 	Engine   *ChatEngine
 	Pool     *pgxpool.Pool
 	Memory   *mimne.Mimne
-	StaticDir string
+	StaticFS embed.FS
 	mux      *http.ServeMux
 }
 
 // NewServer creates a new Metis HTTP server.
-func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticDir string) *Server {
+func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticFS embed.FS) *Server {
 	s := &Server{
-		Engine:    engine,
-		Pool:      pool,
-		Memory:    memory,
-		StaticDir: staticDir,
-		mux:       http.NewServeMux(),
+		Engine:   engine,
+		Pool:     pool,
+		Memory:   memory,
+		StaticFS: staticFS,
+		mux:      http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -43,8 +44,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /chat", s.handleChat)
 	s.mux.HandleFunc("POST /message", s.handleMessage)
 	s.mux.HandleFunc("GET /history", s.handleHistory)
-	// Serve static files
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
+	// Serve static files from the embedded filesystem.
+	sub, err := fs.Sub(s.StaticFS, "static")
+	if err != nil {
+		panic("embed: missing static subtree: " + err.Error())
+	}
+	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 }
 
 // ServeHTTP implements http.Handler.
@@ -57,8 +62,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	indexPath := filepath.Join(s.StaticDir, "index.html")
-	data, err := os.ReadFile(indexPath)
+	data, err := s.StaticFS.ReadFile("static/index.html")
 	if err != nil {
 		http.Error(w, "index.html not found", http.StatusNotFound)
 		return

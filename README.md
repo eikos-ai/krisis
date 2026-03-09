@@ -23,23 +23,92 @@ See `docs/memory_architecture_draft_v1.pdf` for the full architecture descriptio
 
 ## Requirements
 
+### All platforms
+
 - **Go** 1.25+
 - **PostgreSQL** with a database for Mimne (default name: `mimne_v2`). The required tables and extensions are created automatically on first run — just create an empty database and krisis handles the rest.
-- **ONNX Runtime** shared library (e.g. via Homebrew: `brew install onnxruntime`)
 - **Anthropic API key** (or AWS credentials for Bedrock)
 - **Brave Search API key** (optional, for web search tool)
 
+### ONNX Runtime
+
+ONNX Runtime is required for semantic embedding search. Install the shared library for your platform and set `ONNX_RUNTIME_LIB` if it is not in the default location.
+
+**macOS** (Homebrew):
+
+```sh
+brew install onnxruntime
+```
+
+The default `ONNX_RUNTIME_LIB` path (`/opt/homebrew/lib/libonnxruntime.dylib`) works automatically after `brew install`.
+
+**Linux**:
+
+Download the tarball for your architecture from the [ONNX Runtime releases page](https://github.com/microsoft/onnxruntime/releases), extract it, and set `ONNX_RUNTIME_LIB` to the `.so` path:
+
+```sh
+# Replace VERSION and ARCH with the values from the releases page (e.g. 1.22.0, x64)
+wget https://github.com/microsoft/onnxruntime/releases/download/vVERSION/onnxruntime-linux-ARCH-VERSION.tgz
+tar -xf onnxruntime-linux-ARCH-VERSION.tgz
+export ONNX_RUNTIME_LIB=/path/to/onnxruntime-linux-ARCH-VERSION/lib/libonnxruntime.so
+```
+
+**Windows**:
+
+Download the `.zip` for your architecture from the [ONNX Runtime releases page](https://github.com/microsoft/onnxruntime/releases), extract it, and set `ONNX_RUNTIME_LIB` to the `.dll` path:
+
+```powershell
+$env:ONNX_RUNTIME_LIB = "C:\path\to\onnxruntime-win-x64-VERSION\lib\onnxruntime.dll"
+```
+
 ---
 
-## Quick start
+## Setup
 
-### 1. Set environment variables
+### Step 1: Install ONNX Runtime
 
-At minimum:
+Follow the platform-specific instructions in the [Requirements](#onnx-runtime) section above. Verify the library exists at the path you will use for `ONNX_RUNTIME_LIB`.
+
+### Step 2: Create the database
+
+Create an empty PostgreSQL database (default name `mimne_v2`). Krisis creates the required tables and extensions automatically on first run:
+
+```sh
+createdb mimne_v2
+```
+
+Verify:
+
+```sh
+psql -d mimne_v2 -c '\l' | grep mimne_v2
+```
+
+### Step 3: Set environment variables
+
+At minimum, set your API key and database password. Syntax varies by shell:
+
+**bash / zsh:**
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
 export PGPASSWORD=yourpassword
+export ONNX_MODEL_PATH=/path/to/krisis/models/all-MiniLM-L6-v2
+```
+
+**cmd.exe:**
+
+```bat
+set ANTHROPIC_API_KEY=sk-ant-...
+set PGPASSWORD=yourpassword
+set ONNX_MODEL_PATH=C:\path\to\krisis\models\all-MiniLM-L6-v2
+```
+
+**PowerShell:**
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:PGPASSWORD = "yourpassword"
+$env:ONNX_MODEL_PATH = "C:\path\to\krisis\models\all-MiniLM-L6-v2"
 ```
 
 Full list of variables:
@@ -56,7 +125,7 @@ Full list of variables:
 | `PGUSER` | `postgres` | Database user |
 | `PGPASSWORD` | — | Database password |
 | `PORT` | `8321` | HTTP server port |
-| `ONNX_MODEL_PATH` | — | Path to dir with `model.onnx` and `tokenizer.json` |
+| `ONNX_MODEL_PATH` | — | **Required.** Path to dir containing `model.onnx` and `tokenizer.json` |
 | `ONNX_RUNTIME_LIB` | `/opt/homebrew/lib/libonnxruntime.dylib` | Path to ONNX runtime library |
 | `BRAVE_API_KEY` | — | Optional, enables web search |
 | `ALLOWED_PATHS` | — | Comma-separated paths the agent can access |
@@ -65,7 +134,7 @@ Full list of variables:
 | `AWS_REGION` | `us-east-1` | For Bedrock provider |
 | `BEDROCK_MODEL` | see `config.go` | For Bedrock provider |
 
-### 2. Download the embedding model
+### Step 4: Download the embedding model
 
 ```sh
 make download-model
@@ -73,21 +142,60 @@ make download-model
 
 This downloads `all-MiniLM-L6-v2` from HuggingFace into `models/all-MiniLM-L6-v2/`. Embeddings are disabled gracefully if the model is missing, but memory retrieval quality degrades significantly.
 
-### 3. Build and run
+Verify:
+
+```sh
+ls models/all-MiniLM-L6-v2/
+# Should list model.onnx and tokenizer.json
+```
+
+### Step 5: Build
+
+> **Do not use `go build ./...`** — that command builds all packages and produces no binary in the project root.
+
+Use the explicit output path:
+
+```sh
+# macOS / Linux
+go build -o krisis ./cmd/krisis
+
+# Windows
+go build -o krisis.exe ./cmd/krisis
+```
+
+Or use the Makefile shortcut (equivalent to the above):
 
 ```sh
 make build
-./krisis
 ```
 
-Or run directly without building:
+Verify:
 
 ```sh
-make run
-# equivalent to: go run ./cmd/krisis
+# macOS / Linux
+ls -lh krisis
+
+# Windows
+dir krisis.exe
+```
+
+### Step 6: Run
+
+```sh
+# macOS / Linux
+./krisis
+
+# Windows
+krisis.exe
 ```
 
 Open `http://localhost:8321` in a browser.
+
+Verify the server is up:
+
+```sh
+curl http://localhost:8321/health
+```
 
 ---
 
@@ -179,10 +287,73 @@ The web UI is embedded in the binary via Go's `static/` directory — no separat
 - **Schema management**: There are no migration tools. The required tables are created automatically on first run, but breaking schema changes between versions may require manual intervention (e.g. dropping and re-creating tables).
 - **No authentication**: The HTTP server has no auth layer. Do not expose it on a public interface without a proxy.
 - **Session isolation**: All sessions share the same memory store. There is no per-user isolation.
-- **ONNX on non-macOS**: The default `ONNX_RUNTIME_LIB` path is Homebrew on macOS. On Linux/Windows you must set `ONNX_RUNTIME_LIB` explicitly.
 - **History size**: Ephemeral session history is capped at 20 turns. Older turns are dropped from the active context window (but remain in the DB).
 - **Tool loop limit**: The agent tool-use loop runs at most 10 rounds per request. Complex multi-step tasks may hit this limit.
 - **Embeddings required for quality retrieval**: Without ONNX, memory retrieval falls back to full-text search only, which misses semantically related content.
+
+---
+
+## Troubleshooting
+
+### No binary produced after `go build`
+
+**Symptom**: running `go build ./...` completes without error but no `krisis` binary appears.
+
+**Cause**: `go build ./...` builds all packages in the module but does not write a binary for library packages. Only packages with `package main` produce a binary, and `go build ./...` does not write it to the project root.
+
+**Fix**: always specify the output path explicitly:
+
+```sh
+go build -o krisis ./cmd/krisis
+```
+
+### ONNX model path misconfiguration
+
+**Symptom**: server starts but embedding-based retrieval silently falls back to full-text search; log shows `ONNX model not loaded` or similar.
+
+**Cause**: `ONNX_MODEL_PATH` is unset or points to a directory that does not contain both `model.onnx` and `tokenizer.json`.
+
+**Fix**: set `ONNX_MODEL_PATH` to the directory containing both files:
+
+```sh
+export ONNX_MODEL_PATH=/path/to/krisis/models/all-MiniLM-L6-v2
+ls $ONNX_MODEL_PATH
+# model.onnx  tokenizer.json
+```
+
+Run `make download-model` first if the directory is empty.
+
+### Missing ONNX library
+
+**Symptom**: binary exits immediately with `libonnxruntime` not found or a CGo linker error at startup.
+
+**Cause**: the ONNX Runtime shared library is not installed or `ONNX_RUNTIME_LIB` points to the wrong path.
+
+**Fix**:
+- macOS: `brew install onnxruntime` and confirm `/opt/homebrew/lib/libonnxruntime.dylib` exists.
+- Linux/Windows: download from the [ONNX Runtime releases page](https://github.com/microsoft/onnxruntime/releases) and set `ONNX_RUNTIME_LIB` to the full path of the `.so` / `.dll` file.
+
+### Database connection failures
+
+**Symptom**: server exits with a Postgres connection error, or `/health` returns an error referencing the database.
+
+**Checks**:
+1. Confirm PostgreSQL is running: `pg_isready -h localhost -p 5432`
+2. Confirm the database exists: `psql -l | grep mimne_v2`
+3. Confirm credentials: `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT` all set correctly.
+4. On first run, the user must have `CREATE TABLE` and `CREATE EXTENSION` privileges on the target database.
+
+### File tools warning in the UI
+
+**Symptom**: Metis displays a warning that file tools are restricted or that a path is outside the allowed roots.
+
+**Cause**: the `ALLOWED_PATHS` environment variable controls which paths the agent can read and write. Paths outside this list are blocked.
+
+**Fix**: add the directory you want Metis to access to `ALLOWED_PATHS` as a comma-separated list:
+
+```sh
+export ALLOWED_PATHS=/home/user/projects,/home/user/docs
+```
 
 ---
 

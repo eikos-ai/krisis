@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"io"
 	"log"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"github.com/eikos-io/krisis/internal/metis"
 	"github.com/eikos-io/krisis/internal/mimne"
 )
+
+//go:embed static
+var staticFS embed.FS
 
 // stderr is a logger that always prints, even when verbose logging is off.
 var stderr = log.New(os.Stderr, "", log.LstdFlags)
@@ -79,16 +83,7 @@ func main() {
 	// Hydrate conversation history from DB
 	engine.HydrateHistory(ctx)
 
-	// Resolve static directory
-	exe, _ := os.Executable()
-	staticDir := filepath.Join(filepath.Dir(exe), "static")
-	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
-		// Fall back to working directory
-		wd, _ := os.Getwd()
-		staticDir = filepath.Join(wd, "static")
-	}
-
-	server := metis.NewServer(engine, pool, mem, staticDir)
+	server := metis.NewServer(engine, pool, mem, staticFS)
 	addr := ":" + cfg.Port
 	stderr.Fatal(server.ListenAndServe(addr))
 }
