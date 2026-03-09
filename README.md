@@ -26,7 +26,8 @@ See `docs/memory_architecture_draft_v1.pdf` for the full architecture descriptio
 ### All platforms
 
 - **Go** 1.25+
-- **PostgreSQL** with a database for Mimne (default name: `mimne_v2`). The required tables and extensions are created automatically on first run — just create an empty database and krisis handles the rest.
+- **PostgreSQL** with a database for Mimne (default name: `mimne_v2`). The schema must be applied manually before first run using `schema.sql` from the project root (see [Step 2](#step-2-create-the-database)).
+- **pgvector** extension installed in your PostgreSQL instance (required by `schema.sql` for 384-dimensional embeddings; installation varies by platform — see the [pgvector repo](https://github.com/pgvector/pgvector) for instructions).
 - **Anthropic API key** (or AWS credentials for Bedrock)
 - **Brave Search API key** (optional, for web search tool)
 
@@ -71,16 +72,20 @@ Follow the platform-specific instructions in the [Requirements](#onnx-runtime) s
 
 ### Step 2: Create the database
 
-Create an empty PostgreSQL database (default name `mimne_v2`). Krisis creates the required tables and extensions automatically on first run:
+Create an empty PostgreSQL database (default name `mimne_v2`) and apply the schema:
 
 ```sh
 createdb mimne_v2
+psql -d mimne_v2 -f schema.sql
 ```
 
-Verify:
+`schema.sql` uses the pgvector extension for 384-dimensional embeddings. PostgreSQL must have pgvector installed before running this step — see the [pgvector repo](https://github.com/pgvector/pgvector) for platform-specific installation instructions.
+
+Verify the schema was applied:
 
 ```sh
-psql -d mimne_v2 -c '\l' | grep mimne_v2
+psql -d mimne_v2 -c '\dt'
+# Should list: nodes, edges, todos
 ```
 
 ### Step 3: Set environment variables
@@ -204,6 +209,8 @@ curl http://localhost:8321/health
 ```
 krisis/
 ├── cmd/krisis/
+│   ├── static/
+│   │   └── index.html       # Web UI (embedded at build time via go:embed)
 │   └── main.go              # Binary entry point
 ├── internal/
 │   ├── config/
@@ -224,8 +231,6 @@ krisis/
 │       └── ...              # Supporting types and DB operations
 ├── models/
 │   └── all-MiniLM-L6-v2/   # ONNX embedding model (downloaded separately)
-├── static/
-│   └── index.html           # Web UI
 ├── Makefile
 └── go.mod
 ```
@@ -275,7 +280,7 @@ To deploy krisis on another machine, you need:
 1. The compiled binary
 2. The `models/all-MiniLM-L6-v2/` directory (or set `ONNX_MODEL_PATH` to its location)
 3. The ONNX Runtime shared library installed on the target (`libonnxruntime.so` / `.dll`)
-4. A running PostgreSQL instance with an empty database (schema is created automatically on first run)
+4. A running PostgreSQL instance with the schema applied (`psql -d mimne_v2 -f schema.sql`)
 5. Environment variables configured (API keys, DB connection, paths)
 
 The web UI is embedded in the binary via Go's `static/` directory — no separate asset deployment needed.
@@ -284,7 +289,7 @@ The web UI is embedded in the binary via Go's `static/` directory — no separat
 
 ## Known limitations
 
-- **Schema management**: There are no migration tools. The required tables are created automatically on first run, but breaking schema changes between versions may require manual intervention (e.g. dropping and re-creating tables).
+- **Schema management**: There are no migration tools. The schema must be applied manually on first setup using `schema.sql`. Breaking schema changes between versions also require manual intervention (e.g. dropping and re-creating tables).
 - **No authentication**: The HTTP server has no auth layer. Do not expose it on a public interface without a proxy.
 - **Session isolation**: All sessions share the same memory store. There is no per-user isolation.
 - **History size**: Ephemeral session history is capped at 20 turns. Older turns are dropped from the active context window (but remain in the DB).
@@ -341,7 +346,7 @@ Run `make download-model` first if the directory is empty.
 1. Confirm PostgreSQL is running: `pg_isready -h localhost -p 5432`
 2. Confirm the database exists: `psql -l | grep mimne_v2`
 3. Confirm credentials: `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT` all set correctly.
-4. On first run, the user must have `CREATE TABLE` and `CREATE EXTENSION` privileges on the target database.
+4. When applying `schema.sql`, the user must have `CREATE TABLE` and `CREATE EXTENSION` privileges on the target database.
 
 ### File tools warning in the UI
 
