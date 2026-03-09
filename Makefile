@@ -4,7 +4,7 @@ HF_BASE   := https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resol
 .PHONY: build run test download-model clean
 
 build:
-	go build ./...
+	go build -o krisis ./cmd/krisis
 
 run:
 	go run ./cmd/...
