@@ -47,7 +47,11 @@ func (s *Server) registerRoutes() {
 	// Serve static files from the embedded filesystem.
 	sub, err := fs.Sub(s.StaticFS, "static")
 	if err != nil {
-		panic("embed: missing static subtree: " + err.Error())
+		// If the embedded static subtree is missing, fail static requests gracefully
+		s.mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "static assets not available", http.StatusInternalServerError)
+		})
+		return
 	}
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 }
