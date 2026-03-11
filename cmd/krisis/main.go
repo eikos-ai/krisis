@@ -83,7 +83,7 @@ func main() {
 	// Hydrate conversation history from DB
 	engine.HydrateHistory(ctx)
 
-	server := metis.NewServer(engine, pool, mem, staticFS)
+	server := metis.NewServer(engine, pool, mem, staticFS, cfg.PanelsDir)
 	addr := ":" + cfg.Port
 	stderr.Fatal(server.ListenAndServe(addr))
 }

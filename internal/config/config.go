@@ -35,6 +35,7 @@ type Config struct {
 	ProjectName        string
 	ProjectDescription string
 	ProjectPaths       map[string]string
+	PanelsDir          string
 
 	// File access (override/addition via env var)
 	AllowedPaths []string
@@ -73,6 +74,7 @@ func Load() *Config {
 		Port: envOr("PORT", "8321"),
 
 		ProjectFile: os.Getenv("METIS_PROJECT"),
+		PanelsDir:   expandTilde(os.Getenv("METIS_PANELS_DIR")),
 
 		ONNXModelPath: os.Getenv("ONNX_MODEL_PATH"),
 
@@ -153,6 +155,7 @@ func (c *Config) loadProjectFile() {
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
 		Paths       map[string]string `json:"paths"`
+		PanelsDir   string            `json:"panels_dir"`
 	}
 	if err := json.Unmarshal(data, &proj); err != nil {
 		return
@@ -162,5 +165,8 @@ func (c *Config) loadProjectFile() {
 	c.ProjectPaths = make(map[string]string, len(proj.Paths))
 	for name, p := range proj.Paths {
 		c.ProjectPaths[name] = expandTilde(p)
+	}
+	if proj.PanelsDir != "" {
+		c.PanelsDir = expandTilde(proj.PanelsDir)
 	}
 }
