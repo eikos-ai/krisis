@@ -1131,45 +1131,33 @@
         };
 
         async function loadPanels() {
-            console.log('[panels] loadPanels() called');
             let filenames;
             try {
-                console.log('[panels] fetching /panels');
                 const resp = await fetch('/panels');
-                console.log('[panels] /panels response status:', resp.status);
-                if (!resp.ok) {
-                    console.error('[panels] /panels returned non-OK status:', resp.status);
-                    return;
-                }
+                if (!resp.ok) return;
                 filenames = await resp.json();
-                console.log('[panels] panel list:', filenames);
             } catch (err) {
-                console.error('[panels] fetch /panels failed:', err);
+                console.error('Failed to fetch panel list:', err);
                 return;
             }
 
             for (const filename of filenames) {
                 try {
-                    console.log('[panels] importing panel:', filename);
                     const mod = await import(`/project-panels/${filename}`);
                     const slot = document.createElement('div');
                     slot.className = 'panel-slot';
                     panelsContainer.appendChild(slot);
                     if (typeof mod.render === 'function') {
                         mod.render(slot, PanelAPI);
-                        console.log('[panels] rendered panel:', filename);
-                    } else {
-                        console.warn('[panels] panel has no render function:', filename);
                     }
                 } catch (e) {
-                    console.error(`[panels] failed to load panel ${filename}:`, e);
+                    console.error(`Failed to load panel ${filename}:`, e);
                 }
             }
 
             if (panelsContainer.children.length > 0) {
                 panelsContainer.classList.add('has-panels');
             }
-            console.log('[panels] loadPanels() complete, slots:', panelsContainer.children.length);
         }
 
         loadPanels();

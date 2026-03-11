@@ -522,17 +522,30 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 		if root, ok := te.AllowedRoots[target]; ok {
 			resolvedDir = root
 		} else {
-			return fmt.Sprintf(`{"error": "unknown target %q — valid targets: %s"}`, target, strings.Join(te.sortedRootKeys(), ", "))
+			errResp := struct {
+				Error string `json:"error"`
+			}{
+				Error: fmt.Sprintf("unknown target %q — valid targets: %s", target, strings.Join(te.sortedRootKeys(), ", ")),
+			}
+			out, _ := json.Marshal(errResp)
+			return string(out)
 		}
 	} else if workingDir != "" {
 		log.Printf("tool: claude_code WARNING: working_dir is deprecated, use target instead")
 		resolved, err := te.resolveAndValidate(workingDir, false)
 		if err != nil {
-			return fmt.Sprintf(`{"error": "working_dir not within allowed project roots: %s"}`, workingDir)
+			errResp := struct {
+				Error string `json:"error"`
+			}{
+				Error: fmt.Sprintf("working_dir not within allowed project roots: %s", workingDir),
+			}
+			out, _ := json.Marshal(errResp)
+			return string(out)
 		}
 		resolvedDir = resolved
 	} else {
-		// Default: "krisis" if present, otherwise first alphabetical non-panels key
+		// Default: "krisis" if present, otherwise first alphabetical key
+		// (krisis always wins alphabetically over panels, so panels is never selected)
 		if root, ok := te.AllowedRoots["krisis"]; ok {
 			resolvedDir = root
 		} else if len(te.AllowedRoots) > 0 {

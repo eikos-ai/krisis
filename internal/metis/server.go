@@ -60,6 +60,8 @@ func (s *Server) registerRoutes() {
 
 	if s.PanelsDir != "" {
 		s.mux.HandleFunc("GET /panels", s.handlePanelsList)
+		// TODO: http.FileServer serves all files in PanelsDir, not just .js panels.
+		// Restrict to panel file extensions (e.g. .js, .mjs) before production deployment.
 		s.mux.Handle("GET /project-panels/", http.StripPrefix("/project-panels/", http.FileServer(http.Dir(s.PanelsDir))))
 	}
 }
