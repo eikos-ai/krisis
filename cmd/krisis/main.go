@@ -55,8 +55,8 @@ func main() {
 
 	// Build allowed roots for file tools from project config
 	allowedRoots := make(map[string]string)
-	for name, p := range cfg.ProjectPaths {
-		allowedRoots[name] = p
+	for name, t := range cfg.ProjectTargets {
+		allowedRoots[name] = t.Path
 	}
 	// Merge env var overrides
 	for _, p := range cfg.AllowedPaths {

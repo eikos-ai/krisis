@@ -119,7 +119,7 @@ func stripConfidence(text string) string {
 	return strings.TrimSpace(confidenceStripRe.ReplaceAllString(text, ""))
 }
 
-func buildSystemPrompt(ctx, projectName, projectDesc string, rootNames []string) string {
+func buildSystemPrompt(ctx, projectName, projectDesc string, targets map[string]config.ProjectTarget) string {
 	today := time.Now().Format("Monday, January 02, 2006")
 	s := strings.Replace(systemPrompt, "{today}", today, 1)
 
@@ -129,12 +129,58 @@ func buildSystemPrompt(ctx, projectName, projectDesc string, rootNames []string)
 		if projectDesc != "" {
 			projectBlock += "\n" + projectDesc
 		}
-		if len(rootNames) > 0 {
-			projectBlock += "\nProject roots: " + strings.Join(rootNames, ", ")
+		if len(targets) > 0 {
+			names := make([]string, 0, len(targets))
+			for name := range targets {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			projectBlock += "\nProject roots: " + strings.Join(names, ", ")
 		}
 		projectBlock += "\n"
 	}
 	s = strings.Replace(s, "{project}", projectBlock, 1)
+
+	// Build operational self-model
+	var sm strings.Builder
+	sm.WriteString("\nOperational self-model:\n")
+	sm.WriteString("You are Metis, the conversational interface for this project.\n\n")
+
+	// Tool inventory from canonicalTools
+	sm.WriteString("Tools available:\n")
+	for _, tool := range canonicalTools() {
+		name, _ := tool["name"].(string)
+		desc, _ := tool["description"].(string)
+		// Truncate description to first sentence for brevity
+		if idx := strings.Index(desc, ". "); idx != -1 {
+			desc = desc[:idx+1]
+		}
+		sm.WriteString(fmt.Sprintf("- %s: %s\n", name, desc))
+	}
+
+	// BRIEFING.md workflow
+	sm.WriteString("\nBRIEFING.md workflow:\n")
+	sm.WriteString("BRIEFING.md is the coordination artifact. Use update_briefing to add tasks (add_task), move tasks between sections (move_task), or update project state (update_context). Then invoke claude_code to execute the task.\n")
+
+	// Project targets
+	if len(targets) > 0 {
+		sm.WriteString("\nProject targets (for claude_code 'target' parameter):\n")
+		names := make([]string, 0, len(targets))
+		for name := range targets {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			t := targets[name]
+			line := fmt.Sprintf("- %s (%s)", name, t.Path)
+			if t.Role != "" {
+				line += ": " + t.Role
+			}
+			sm.WriteString(line + "\n")
+		}
+	}
+
+	s = strings.Replace(s, "\n{context}", sm.String()+"\n{context}", 1)
 
 	if ctx == "" {
 		ctx = "(No relevant context retrieved.)"
@@ -142,14 +188,6 @@ func buildSystemPrompt(ctx, projectName, projectDesc string, rootNames []string)
 	return strings.Replace(s, "{context}", ctx, 1)
 }
 
-func sortedRootNames(paths map[string]string) []string {
-	names := make([]string, 0, len(paths))
-	for name := range paths {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
 
 // planningComplete makes a non-streaming Anthropic API call for the planning phase.
 func planningComplete(ctx context.Context, model, system, userContent string) (string, error) {
@@ -293,8 +331,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	}
 
 	// 3. Build system prompt (with planning trace appended if available)
-	rootNames := sortedRootNames(ce.Config.ProjectPaths)
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, rootNames)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectTargets)
 	if planningTrace != "" {
 		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
 	}
@@ -487,8 +524,7 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, contentBlocks any) string {
 	// Retrieve memory context
 	memCtx := ce.Memory.GetContext(ctx, userMessage)
-	rootNames := sortedRootNames(ce.Config.ProjectPaths)
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, rootNames)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectTargets)
 
 	messages := make([]map[string]any, len(ce.History))
 	copy(messages, ce.History)
