@@ -55,8 +55,8 @@ func main() {
 
 	// Build allowed roots for file tools from project config
 	allowedRoots := make(map[string]string)
-	for name, p := range cfg.ProjectPaths {
-		allowedRoots[name] = p
+	for name, t := range cfg.ProjectTargets {
+		allowedRoots[name] = t.Path
 	}
 	// Merge env var overrides
 	for _, p := range cfg.AllowedPaths {
@@ -83,7 +83,7 @@ func main() {
 	// Hydrate conversation history from DB
 	engine.HydrateHistory(ctx)
 
-	server := metis.NewServer(engine, pool, mem, staticFS)
+	server := metis.NewServer(engine, pool, mem, staticFS, cfg.PanelsDir)
 	addr := ":" + cfg.Port
 	stderr.Fatal(server.ListenAndServe(addr))
 }

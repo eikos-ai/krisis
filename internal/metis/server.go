@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,21 +19,23 @@ import (
 
 // Server is the HTTP server for the Metis conversation interface.
 type Server struct {
-	Engine   *ChatEngine
-	Pool     *pgxpool.Pool
-	Memory   *mimne.Mimne
-	StaticFS embed.FS
-	mux      *http.ServeMux
+	Engine    *ChatEngine
+	Pool      *pgxpool.Pool
+	Memory    *mimne.Mimne
+	StaticFS  embed.FS
+	PanelsDir string
+	mux       *http.ServeMux
 }
 
 // NewServer creates a new Metis HTTP server.
-func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticFS embed.FS) *Server {
+func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticFS embed.FS, panelsDir string) *Server {
 	s := &Server{
-		Engine:   engine,
-		Pool:     pool,
-		Memory:   memory,
-		StaticFS: staticFS,
-		mux:      http.NewServeMux(),
+		Engine:    engine,
+		Pool:      pool,
+		Memory:    memory,
+		StaticFS:  staticFS,
+		PanelsDir: panelsDir,
+		mux:       http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -54,6 +57,13 @@ func (s *Server) registerRoutes() {
 		return
 	}
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+
+	if s.PanelsDir != "" {
+		s.mux.HandleFunc("GET /panels", s.handlePanelsList)
+		// TODO: http.FileServer serves all files in PanelsDir, not just .js panels.
+		// Restrict to panel file extensions (e.g. .js, .mjs) before production deployment.
+		s.mux.Handle("GET /project-panels/", http.StripPrefix("/project-panels/", http.FileServer(http.Dir(s.PanelsDir))))
+	}
 }
 
 // ServeHTTP implements http.Handler.
@@ -78,6 +88,25 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) handlePanelsList(w http.ResponseWriter, r *http.Request) {
+	entries, err := os.ReadDir(s.PanelsDir)
+	if err != nil {
+		http.Error(w, "panels directory not accessible", http.StatusInternalServerError)
+		return
+	}
+	var panels []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".js") {
+			panels = append(panels, e.Name())
+		}
+	}
+	if panels == nil {
+		panels = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(panels)
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {

@@ -120,14 +120,15 @@ func canonicalTools() []map[string]any {
 		},
 		{
 			"name":        "claude_code",
-			"description": "Invoke Claude Code CLI in headless mode to execute a development task. Purpose-built for the builder pattern — delegates coding tasks to a Claude Code agent that can read, write, and edit files. Returns the result including a session_id for follow-up tasks.",
+			"description": "Invoke Claude Code CLI in headless mode to execute a development task. Purpose-built for the builder pattern — delegates coding tasks to a Claude Code agent that can read, write, and edit files. Returns the result including a session_id for follow-up tasks. Use 'target' to select which project directory to work in.",
 			"input_schema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"task":          map[string]any{"type": "string", "description": "Task description sent to Claude Code"},
+					"target":        map[string]any{"type": "string", "description": "Target name from project config (e.g. 'krisis', 'panels'). Resolves to the configured directory."},
 					"session_id":    map[string]any{"type": "string", "description": "Resume a previous session for context continuity. Omit for new session."},
 					"allowed_tools": map[string]any{"type": "string", "description": "Comma-separated tool whitelist (default: Read,Write,Edit)"},
-					"working_dir":   map[string]any{"type": "string", "description": "Working directory — must be within allowed project roots"},
+					"working_dir":   map[string]any{"type": "string", "description": "DEPRECATED: use 'target' instead. Raw directory path, kept for backward compatibility."},
 				},
 				"required": []string{"task"},
 			},
@@ -156,6 +157,15 @@ type ToolExecutor struct {
 	AllowedRoots map[string]string // name -> absolute path
 	Memory       *mimne.Mimne
 	BraveAPIKey  string
+}
+
+func (te *ToolExecutor) sortedRootKeys() []string {
+	keys := make([]string, 0, len(te.AllowedRoots))
+	for k := range te.AllowedRoots {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // resolveAndValidate resolves a path and checks it's within allowed directories.
@@ -309,10 +319,10 @@ func (te *ToolExecutor) ExecuteTool(ctx context.Context, name string, input map[
 		log.Printf("tool: get_targeted result=ok (%d bytes)", len(result))
 		return result
 	case "claude_code":
-		log.Printf("tool: claude_code task=%q session_id=%q working_dir=%q",
-			getString(input, "task"), getString(input, "session_id"), getString(input, "working_dir"))
-		result := te.claudeCode(ctx, getString(input, "task"), getString(input, "session_id"),
-			getString(input, "allowed_tools"), getString(input, "working_dir"))
+		log.Printf("tool: claude_code task=%q target=%q session_id=%q working_dir=%q",
+			getString(input, "task"), getString(input, "target"), getString(input, "session_id"), getString(input, "working_dir"))
+		result := te.claudeCode(ctx, getString(input, "task"), getString(input, "target"),
+			getString(input, "session_id"), getString(input, "allowed_tools"), getString(input, "working_dir"))
 		log.Printf("tool: claude_code result=ok (%d bytes)", len(result))
 		return result
 	case "update_briefing":
@@ -500,40 +510,55 @@ func (te *ToolExecutor) braveSearch(query string, count int) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func (te *ToolExecutor) claudeCode(ctx context.Context, task, sessionID, allowedTools, workingDir string) string {
+func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID, allowedTools, workingDir string) string {
 	// Verify claude is on PATH
 	if _, err := exec.LookPath("claude"); err != nil {
 		return `{"error": "claude CLI not found on PATH"}`
 	}
 
-	// Default working_dir to project root if empty.
-	// Maps iterate in random order, so pick "krisis" if present,
-	// otherwise fall back to the alphabetically first key.
-	if workingDir == "" {
-		if root, ok := te.AllowedRoots["krisis"]; ok {
-			workingDir = root
-		} else if len(te.AllowedRoots) > 0 {
-			keys := make([]string, 0, len(te.AllowedRoots))
-			for k := range te.AllowedRoots {
-				keys = append(keys, k)
+	// Resolve working directory from target name or deprecated working_dir
+	resolvedDir := ""
+	if target != "" {
+		if root, ok := te.AllowedRoots[target]; ok {
+			resolvedDir = root
+		} else {
+			errResp := struct {
+				Error string `json:"error"`
+			}{
+				Error: fmt.Sprintf("unknown target %q — valid targets: %s", target, strings.Join(te.sortedRootKeys(), ", ")),
 			}
-			sort.Strings(keys)
-			workingDir = te.AllowedRoots[keys[0]]
+			out, _ := json.Marshal(errResp)
+			return string(out)
 		}
-	}
-
-	// Validate working_dir
-	if workingDir != "" {
+	} else if workingDir != "" {
+		log.Printf("tool: claude_code WARNING: working_dir is deprecated, use target instead")
 		resolved, err := te.resolveAndValidate(workingDir, false)
 		if err != nil {
-			return fmt.Sprintf(`{"error": "working_dir not within allowed project roots: %s"}`, workingDir)
+			errResp := struct {
+				Error string `json:"error"`
+			}{
+				Error: fmt.Sprintf("working_dir not within allowed project roots: %s", workingDir),
+			}
+			out, _ := json.Marshal(errResp)
+			return string(out)
 		}
-		workingDir = resolved
+		resolvedDir = resolved
+	} else {
+		// Default: "krisis" if present, otherwise first alphabetical key
+		// (krisis always wins alphabetically over panels, so panels is never selected)
+		if root, ok := te.AllowedRoots["krisis"]; ok {
+			resolvedDir = root
+		} else if len(te.AllowedRoots) > 0 {
+			for _, k := range te.sortedRootKeys() {
+				resolvedDir = te.AllowedRoots[k]
+				break
+			}
+		}
 	}
 
-	// Prepend scoping instruction so Claude Code stays within working_dir
-	if workingDir != "" {
-		task = fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory.\n\n%s", workingDir, task)
+	// Prepend scoping instruction so Claude Code stays within the target directory
+	if resolvedDir != "" {
+		task = fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory.\n\n%s", resolvedDir, task)
 	}
 
 	// Build command args
@@ -551,8 +576,8 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, sessionID, allowed
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, "claude", args...)
-	if workingDir != "" {
-		cmd.Dir = workingDir
+	if resolvedDir != "" {
+		cmd.Dir = resolvedDir
 	}
 
 	log.Printf("tool: claude_code exec: claude %s", strings.Join(args, " "))

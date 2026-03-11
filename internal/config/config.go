@@ -2,11 +2,18 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+// ProjectTarget represents a named project directory with an optional semantic role.
+type ProjectTarget struct {
+	Path string
+	Role string
+}
 
 type Config struct {
 	// LLM provider
@@ -34,7 +41,8 @@ type Config struct {
 	ProjectFile        string
 	ProjectName        string
 	ProjectDescription string
-	ProjectPaths       map[string]string
+	ProjectTargets     map[string]ProjectTarget
+	PanelsDir          string
 
 	// File access (override/addition via env var)
 	AllowedPaths []string
@@ -73,6 +81,7 @@ func Load() *Config {
 		Port: envOr("PORT", "8321"),
 
 		ProjectFile: os.Getenv("METIS_PROJECT"),
+		PanelsDir:   expandTilde(os.Getenv("METIS_PANELS_DIR")),
 
 		ONNXModelPath: os.Getenv("ONNX_MODEL_PATH"),
 
@@ -150,17 +159,64 @@ func (c *Config) loadProjectFile() {
 		return
 	}
 	var proj struct {
-		Name        string            `json:"name"`
-		Description string            `json:"description"`
-		Paths       map[string]string `json:"paths"`
+		Name        string                     `json:"name"`
+		Description string                     `json:"description"`
+		Paths       map[string]json.RawMessage `json:"paths"`
+		PanelsDir   string                     `json:"panels_dir"`
 	}
 	if err := json.Unmarshal(data, &proj); err != nil {
+		fmt.Fprintf(os.Stderr, "config: failed to parse project file %s: %v\n", path, err)
 		return
 	}
 	c.ProjectName = proj.Name
 	c.ProjectDescription = proj.Description
-	c.ProjectPaths = make(map[string]string, len(proj.Paths))
-	for name, p := range proj.Paths {
-		c.ProjectPaths[name] = expandTilde(p)
+	c.ProjectTargets = make(map[string]ProjectTarget, len(proj.Paths))
+	for name, raw := range proj.Paths {
+		// Try object form first: {"path": "...", "role": "..."}
+		var obj struct {
+			Path string `json:"path"`
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(raw, &obj); err == nil && obj.Path != "" {
+			absPath := expandTilde(obj.Path)
+			if _, statErr := os.Stat(absPath); statErr != nil {
+				fmt.Fprintf(os.Stderr, "config: target %q path does not exist: %s\n", name, absPath)
+			}
+			c.ProjectTargets[name] = ProjectTarget{Path: absPath, Role: obj.Role}
+			continue
+		}
+		// Fall back to plain string
+		var plainPath string
+		if err := json.Unmarshal(raw, &plainPath); err == nil {
+			absPath := expandTilde(plainPath)
+			if _, statErr := os.Stat(absPath); statErr != nil {
+				fmt.Fprintf(os.Stderr, "config: target %q path does not exist: %s\n", name, absPath)
+			}
+			c.ProjectTargets[name] = ProjectTarget{Path: absPath}
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "config: target %q has invalid value in project file\n", name)
 	}
+	if proj.PanelsDir != "" {
+		c.PanelsDir = expandTilde(proj.PanelsDir)
+		// Auto-create "panels" target if not already defined
+		if _, exists := c.ProjectTargets["panels"]; !exists {
+			if _, statErr := os.Stat(c.PanelsDir); statErr != nil {
+				fmt.Fprintf(os.Stderr, "config: panels_dir does not exist: %s\n", c.PanelsDir)
+			}
+			c.ProjectTargets["panels"] = ProjectTarget{
+				Path: c.PanelsDir,
+				Role: "domain panel files — HTML/JS modules loaded by Metis UI",
+			}
+		}
+	}
+}
+
+// TargetPaths returns a simple name->path map for backward compatibility.
+func (c *Config) TargetPaths() map[string]string {
+	m := make(map[string]string, len(c.ProjectTargets))
+	for name, t := range c.ProjectTargets {
+		m[name] = t.Path
+	}
+	return m
 }
