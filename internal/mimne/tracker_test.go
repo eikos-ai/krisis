@@ -8,9 +8,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestTrackerCreateAndQuery creates a tracker node, verifies it's queryable via
-// FindActiveTrackers, and cleans up after itself.
-func TestTrackerCreateAndQuery(t *testing.T) {
+// TestTaskTrackerCreateAndQuery creates a task_tracker node, verifies it's
+// queryable via FindActiveTaskTrackers, and cleans up after itself.
+func TestTaskTrackerCreateAndQuery(t *testing.T) {
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, testDBURL())
@@ -27,10 +27,10 @@ func TestTrackerCreateAndQuery(t *testing.T) {
 
 	// Cleanup any stale test trackers from prior runs
 	_, _ = pool.Exec(ctx,
-		`DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE node_type = 'tracker' AND content->>'topic' LIKE 'test-tracker-%')
-		    OR target_id IN (SELECT id FROM nodes WHERE node_type = 'tracker' AND content->>'topic' LIKE 'test-tracker-%')`)
+		`DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE node_type = 'task_tracker' AND content->>'topic' LIKE 'test-tracker-%')
+		    OR target_id IN (SELECT id FROM nodes WHERE node_type = 'task_tracker' AND content->>'topic' LIKE 'test-tracker-%')`)
 	_, _ = pool.Exec(ctx,
-		`DELETE FROM nodes WHERE node_type = 'tracker' AND content->>'topic' LIKE 'test-tracker-%'`)
+		`DELETE FROM nodes WHERE node_type = 'task_tracker' AND content->>'topic' LIKE 'test-tracker-%'`)
 
 	var cleanupIDs []string
 	defer func() {
@@ -45,25 +45,25 @@ func TestTrackerCreateAndQuery(t *testing.T) {
 			cleanupIDs)
 	}()
 
-	// --- Create a tracker ---
+	// --- Create a task tracker ---
 	topic := "test-tracker-implement auth middleware"
 	scratchpad := "- Add JWT validation (open)\n- Add rate limiting (open)"
 
-	trackerID, err := m.CreateTracker(ctx, "task", topic, scratchpad)
+	trackerID, err := m.CreateTaskTracker(ctx, topic, scratchpad)
 	if err != nil {
-		t.Fatalf("CreateTracker: %v", err)
+		t.Fatalf("CreateTaskTracker: %v", err)
 	}
 	cleanupIDs = append(cleanupIDs, trackerID)
-	t.Logf("created tracker: %s", trackerID)
+	t.Logf("created task_tracker: %s", trackerID)
 
 	// --- Verify the node exists with correct content ---
 	var contentJSON []byte
 	err = pool.QueryRow(ctx,
-		`SELECT content FROM nodes WHERE id = $1::uuid AND node_type = 'tracker'`,
+		`SELECT content FROM nodes WHERE id = $1::uuid AND node_type = 'task_tracker'`,
 		trackerID,
 	).Scan(&contentJSON)
 	if err != nil {
-		t.Fatalf("query tracker node: %v", err)
+		t.Fatalf("query task_tracker node: %v", err)
 	}
 
 	var content TrackerContent
@@ -83,12 +83,12 @@ func TestTrackerCreateAndQuery(t *testing.T) {
 		t.Errorf("scratchpad = %q, want %q", content.Scratchpad, scratchpad)
 	}
 
-	// --- FindActiveTrackers should return this tracker for related text ---
-	trackers, err := m.FindActiveTrackers(ctx, "implement the auth middleware for JWT tokens")
+	// --- FindActiveTaskTrackers should return this tracker for related text ---
+	trackers, err := m.FindActiveTaskTrackers(ctx, "implement the auth middleware for JWT tokens")
 	if err != nil {
-		t.Fatalf("FindActiveTrackers: %v", err)
+		t.Fatalf("FindActiveTaskTrackers: %v", err)
 	}
-	t.Logf("FindActiveTrackers returned %d result(s)", len(trackers))
+	t.Logf("FindActiveTaskTrackers returned %d result(s)", len(trackers))
 
 	found := false
 	for _, tn := range trackers {
@@ -101,7 +101,7 @@ func TestTrackerCreateAndQuery(t *testing.T) {
 		if !m.Embedder.ready {
 			t.Logf("NOTE: tracker not found in similarity search (embedder not ready; zero-vector similarity unreliable)")
 		} else {
-			t.Errorf("created tracker %s not found in FindActiveTrackers results", trackerID)
+			t.Errorf("created task_tracker %s not found in FindActiveTaskTrackers results", trackerID)
 		}
 	}
 
@@ -116,16 +116,16 @@ func TestTrackerCreateAndQuery(t *testing.T) {
 		t.Fatalf("query embedding/sv: %v", err)
 	}
 	if !hasEmbedding {
-		t.Error("tracker node has no embedding")
+		t.Error("task_tracker node has no embedding")
 	}
 	if !hasSearchVector {
-		t.Error("tracker node has no search_vector")
+		t.Error("task_tracker node has no search_vector")
 	}
 }
 
-// TestTrackerResolve creates a tracker, resolves it, and verifies the resulting
-// learning node and derived_from edge.
-func TestTrackerResolve(t *testing.T) {
+// TestTaskTrackerResolve creates a task_tracker, resolves it, and verifies
+// the resulting learning node and derived_from edge.
+func TestTaskTrackerResolve(t *testing.T) {
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, testDBURL())
@@ -153,19 +153,20 @@ func TestTrackerResolve(t *testing.T) {
 			cleanupIDs)
 	}()
 
-	// Create a tracker with a settled scratchpad
+	// Create a task tracker with a settled scratchpad
 	topic := "test-tracker-fix login bug"
 	scratchpad := "- Null pointer on empty session (settled)\n- Add error logging (settled)"
 
-	trackerID, err := m.CreateTracker(ctx, "task", topic, scratchpad)
+	trackerID, err := m.CreateTaskTracker(ctx, topic, scratchpad)
 	if err != nil {
-		t.Fatalf("CreateTracker: %v", err)
+		t.Fatalf("CreateTaskTracker: %v", err)
 	}
 	cleanupIDs = append(cleanupIDs, trackerID)
 
 	// Resolve it
 	tracker := TrackerNode{
-		ID: trackerID,
+		ID:       trackerID,
+		NodeType: "task_tracker",
 		Content: TrackerContent{
 			Subtype:    "task",
 			Topic:      topic,
@@ -173,8 +174,8 @@ func TestTrackerResolve(t *testing.T) {
 			Status:     "active",
 		},
 	}
-	if err := m.ResolveTracker(ctx, tracker); err != nil {
-		t.Fatalf("ResolveTracker: %v", err)
+	if err := m.ResolveTaskTracker(ctx, tracker); err != nil {
+		t.Fatalf("ResolveTaskTracker: %v", err)
 	}
 
 	// Verify tracker status is now "resolved"
@@ -185,7 +186,7 @@ func TestTrackerResolve(t *testing.T) {
 		trackerID,
 	).Scan(&contentJSON)
 	if err != nil {
-		t.Fatalf("query resolved tracker: %v", err)
+		t.Fatalf("query resolved task_tracker: %v", err)
 	}
 	if err := json.Unmarshal(contentJSON, &resolvedContent); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -231,42 +232,39 @@ func TestTrackerResolve(t *testing.T) {
 	}
 }
 
-// TestDirectiveClassification verifies isDirective and classifyDirective.
-func TestDirectiveClassification(t *testing.T) {
+// TestTaskDirectiveClassification verifies isTaskDirective.
+func TestTaskDirectiveClassification(t *testing.T) {
 	cases := []struct {
 		text      string
 		directive bool
-		subtype   string
 	}{
-		{"fix the login bug", true, "task"},
-		{"implement JWT auth", true, "task"},
-		{"add rate limiting to the API", true, "task"},
-		{"create a new endpoint", true, "task"},
-		{"build the dashboard component", true, "task"},
-		{"update the config loader", true, "task"},
-		{"refactor the session handling", true, "task"},
-		{"remove the deprecated endpoint", true, "task"},
-		{"let's discuss the architecture", true, "discussion"},
-		{"what should we do about the memory leak", true, "discussion"},
-		{"how should we handle auth tokens", true, "discussion"},
-		{"we need to figure out deployment", true, "discussion"},
+		{"fix the login bug", true},
+		{"implement JWT auth", true},
+		{"add rate limiting to the API", true},
+		{"create a new endpoint", true},
+		{"build the dashboard component", true},
+		{"update the config loader", true},
+		{"refactor the session handling", true},
+		{"remove the deprecated endpoint", true},
+		{"we need to figure out deployment", true},
+		// Discussion starters are NOT task directives
+		{"let's discuss the architecture", false},
+		{"what should we do about the memory leak", false},
+		{"how should we handle auth tokens", false},
 		// Non-directives
-		{"hello", false, ""},
-		{"what is a JWT token?", false, ""},
-		{"can you explain this code?", false, ""},
-		{"the build is failing", false, ""},
+		{"hello", false},
+		{"what is a JWT token?", false},
+		{"can you explain this code?", false},
+		{"the build is failing", false},
+		// Design discussions that should be caught by LLM classifier, not regex
+		{"So what is Mimne a model of?", false},
+		{"Entity discovery might be related to ontologies", false},
 	}
 
 	for _, tc := range cases {
-		got := isDirective(tc.text)
+		got := isTaskDirective(tc.text)
 		if got != tc.directive {
-			t.Errorf("isDirective(%q) = %v, want %v", tc.text, got, tc.directive)
-		}
-		if tc.directive {
-			gotType := classifyDirective(tc.text)
-			if gotType != tc.subtype {
-				t.Errorf("classifyDirective(%q) = %q, want %q", tc.text, gotType, tc.subtype)
-			}
+			t.Errorf("isTaskDirective(%q) = %v, want %v", tc.text, got, tc.directive)
 		}
 	}
 }
