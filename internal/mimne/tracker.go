@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	TrackerModel        = "claude-haiku-4-5-20250929"
+	TrackerModel        = "claude-haiku-4-5-20251001"
 	TrackerSimThreshold = 0.5
 )
 
