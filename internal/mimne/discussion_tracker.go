@@ -48,15 +48,17 @@ func (m *Mimne) ClassifyDiscussionTopic(ctx context.Context, humanText, assistan
 
 	var result classificationResult
 	if err := json.Unmarshal([]byte(resp), &result); err != nil {
+		parsed := false
 		// Try to extract JSON from response if there's surrounding text
 		if start := strings.Index(resp, "{"); start >= 0 {
 			if end := strings.LastIndex(resp, "}"); end > start {
 				if err2 := json.Unmarshal([]byte(resp[start:end+1]), &result); err2 != nil {
 					return false, "", fmt.Errorf("parse classification response: %w (raw: %s)", err2, resp)
 				}
+				parsed = true
 			}
 		}
-		if result.Topic == "" && !result.IsNewTopic {
+		if !parsed {
 			return false, "", fmt.Errorf("parse classification response: %w (raw: %s)", err, resp)
 		}
 	}
@@ -189,15 +191,17 @@ func (m *Mimne) CheckDiscussionTrackerResolution(ctx context.Context, tracker Tr
 
 	var result resolutionResult
 	if err := json.Unmarshal([]byte(resp), &result); err != nil {
+		parsed := false
 		// Try to extract JSON from response
 		if start := strings.Index(resp, "{"); start >= 0 {
 			if end := strings.LastIndex(resp, "}"); end > start {
 				if err2 := json.Unmarshal([]byte(resp[start:end+1]), &result); err2 != nil {
 					return false, "", fmt.Errorf("parse resolution response: %w (raw: %s)", err2, resp)
 				}
+				parsed = true
 			}
 		}
-		if !result.Resolved && result.Conclusion == "" {
+		if !parsed {
 			return false, "", fmt.Errorf("parse resolution response: %w (raw: %s)", err, resp)
 		}
 	}
@@ -294,7 +298,15 @@ func (m *Mimne) updateDiscussionTrackers(ctx context.Context, humanText, assista
 		return
 	}
 
-	// No matching discussion tracker — ask LLM if this is a new design topic
+	// No matching discussion tracker — ask LLM if this is a new design topic.
+	// Skip classification if API key isn't set or message is too short to be substantive.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		return
+	}
+	if len(humanText) < 20 {
+		return
+	}
+
 	isNew, topic, err := m.ClassifyDiscussionTopic(ctx, humanText, assistantText)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mimne: ClassifyDiscussionTopic error: %v\n", err)
