@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -509,8 +510,8 @@ func (te *ToolExecutor) braveSearch(query string, count int) string {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Sprintf("Error: search request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Sprintf("Error: Brave API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var data struct {
@@ -550,6 +551,22 @@ func (te *ToolExecutor) fetchURL(rawURL string) string {
 		return fmt.Sprintf("Error: invalid URL: %s", rawURL)
 	}
 
+	// SSRF protection: reject URLs that resolve to private/internal addresses
+	host := parsed.Hostname()
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Sprintf("Error: cannot resolve host %s: %s", host, err)
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+			return fmt.Sprintf("Error: URL resolves to private/internal address: %s", ipStr)
+		}
+	}
+
 	article, err := readability.FromURL(rawURL, 30*time.Second)
 	if err != nil {
 		return fmt.Sprintf("Error: failed to fetch or parse %s: %s", rawURL, err)
@@ -567,6 +584,9 @@ func (te *ToolExecutor) fetchURL(rawURL string) string {
 	text := strings.TrimSpace(textBuf.String())
 	if text == "" {
 		return fmt.Sprintf("Error: no readable content found at %s", rawURL)
+	}
+	if len(text) > 50000 {
+		text = text[:50000] + "\n\n[Content truncated at 50KB]"
 	}
 	sb.WriteString(text)
 	return sb.String()
