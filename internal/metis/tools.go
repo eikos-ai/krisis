@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	readability "codeberg.org/readeck/go-readability/v2"
 
 	"github.com/eikos-io/krisis/internal/mimne"
 )
@@ -134,6 +138,17 @@ func canonicalTools() []map[string]any {
 			},
 		},
 		{
+			"name":        "fetch_url",
+			"description": "Fetch a web URL and return its readable text content. Strips navigation, ads, and boilerplate — returns the main article or document text. Use after web_search to retrieve full content from a URL.",
+			"input_schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"url": map[string]any{"type": "string", "description": "The URL to fetch"},
+				},
+				"required": []string{"url"},
+			},
+		},
+		{
 			"name":        "update_briefing",
 			"description": "Structured editing tool for BRIEFING.md. Supports three operations: add_task (append a new task to Pending), move_task (move a task between Pending/Validating/Completed), and update_context (replace the Current State section). This is the only way to modify BRIEFING.md.",
 			"input_schema": map[string]any{
@@ -248,6 +263,8 @@ func DescribeToolUse(toolName string, toolInput map[string]any) string {
 		return "Checking memory inventory..."
 	case "get_targeted":
 		return fmt.Sprintf("Targeted retrieval: %s...", getString(toolInput, "keywords"))
+	case "fetch_url":
+		return fmt.Sprintf("Fetching %s...", getString(toolInput, "url"))
 	case "claude_code":
 		task := getString(toolInput, "task")
 		if len(task) > 60 {
@@ -317,6 +334,16 @@ func (te *ToolExecutor) ExecuteTool(ctx context.Context, name string, input map[
 			getString(input, "domain"), getString(input, "keywords"), getString(input, "source_type"), limit)
 		result := te.Memory.GetTargeted(ctx, getString(input, "domain"), getString(input, "keywords"), getString(input, "source_type"), limit)
 		log.Printf("tool: get_targeted result=ok (%d bytes)", len(result))
+		return result
+	case "fetch_url":
+		rawURL := getString(input, "url")
+		log.Printf("tool: fetch_url url=%q", rawURL)
+		result := te.fetchURL(rawURL)
+		if strings.HasPrefix(result, "Error") {
+			log.Printf("tool: fetch_url error=%q", result)
+		} else {
+			log.Printf("tool: fetch_url result=ok (%d bytes)", len(result))
+		}
 		return result
 	case "claude_code":
 		log.Printf("tool: claude_code task=%q target=%q session_id=%q working_dir=%q",
@@ -482,6 +509,11 @@ func (te *ToolExecutor) braveSearch(query string, count int) string {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Sprintf("Error: Brave API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
 	var data struct {
 		Web struct {
 			Results []struct {
@@ -508,6 +540,56 @@ func (te *ToolExecutor) braveSearch(query string, count int) string {
 		parts = append(parts, fmt.Sprintf("%s\n%s\n%s", r.Title, r.URL, r.Description))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func (te *ToolExecutor) fetchURL(rawURL string) string {
+	if rawURL == "" {
+		return "Error: url is required"
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Sprintf("Error: invalid URL: %s", rawURL)
+	}
+
+	// SSRF protection: reject URLs that resolve to private/internal addresses
+	host := parsed.Hostname()
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Sprintf("Error: cannot resolve host %s: %s", host, err)
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+			return fmt.Sprintf("Error: URL resolves to private/internal address: %s", ipStr)
+		}
+	}
+
+	article, err := readability.FromURL(rawURL, 30*time.Second)
+	if err != nil {
+		return fmt.Sprintf("Error: failed to fetch or parse %s: %s", rawURL, err)
+	}
+
+	var sb strings.Builder
+	if article.Title() != "" {
+		sb.WriteString(article.Title())
+		sb.WriteString("\n\n")
+	}
+	var textBuf strings.Builder
+	if err := article.RenderText(&textBuf); err != nil {
+		return fmt.Sprintf("Error: failed to render text from %s: %s", rawURL, err)
+	}
+	text := strings.TrimSpace(textBuf.String())
+	if text == "" {
+		return fmt.Sprintf("Error: no readable content found at %s", rawURL)
+	}
+	if len(text) > 50000 {
+		text = text[:50000] + "\n\n[Content truncated at 50KB]"
+	}
+	sb.WriteString(text)
+	return sb.String()
 }
 
 func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID, allowedTools, workingDir string) string {
