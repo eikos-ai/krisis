@@ -44,6 +44,9 @@ type Config struct {
 	ProjectTargets     map[string]ProjectTarget
 	PanelsDir          string
 
+	// Project narrative (curated context injected into system prompt)
+	ProjectNarrative string
+
 	// File access (override/addition via env var)
 	AllowedPaths []string
 
@@ -159,10 +162,11 @@ func (c *Config) loadProjectFile() {
 		return
 	}
 	var proj struct {
-		Name        string                     `json:"name"`
-		Description string                     `json:"description"`
-		Paths       map[string]json.RawMessage `json:"paths"`
-		PanelsDir   string                     `json:"panels_dir"`
+		Name          string                     `json:"name"`
+		Description   string                     `json:"description"`
+		NarrativeFile string                     `json:"narrative_file"`
+		Paths         map[string]json.RawMessage `json:"paths"`
+		PanelsDir     string                     `json:"panels_dir"`
 	}
 	if err := json.Unmarshal(data, &proj); err != nil {
 		fmt.Fprintf(os.Stderr, "config: failed to parse project file %s: %v\n", path, err)
@@ -170,6 +174,15 @@ func (c *Config) loadProjectFile() {
 	}
 	c.ProjectName = proj.Name
 	c.ProjectDescription = proj.Description
+	if proj.NarrativeFile != "" {
+		narPath := expandTilde(proj.NarrativeFile)
+		narData, narErr := os.ReadFile(narPath)
+		if narErr != nil {
+			fmt.Fprintf(os.Stderr, "config: could not read narrative file %s: %v\n", narPath, narErr)
+		} else {
+			c.ProjectNarrative = string(narData)
+		}
+	}
 	c.ProjectTargets = make(map[string]ProjectTarget, len(proj.Paths))
 	for name, raw := range proj.Paths {
 		// Try object form first: {"path": "...", "role": "..."}
