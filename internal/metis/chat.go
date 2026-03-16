@@ -25,13 +25,14 @@ const maxToolRounds = 10
 const maxHistoryTurns = 10
 const planningHistoryTurns = 3
 
-const planningSystemPrompt = `You are a planning assistant for a technical conversation. Given the user's message, retrieved memory context, any active task tracker state, and recent conversation history, reason briefly about your approach for this turn.
+const planningSystemPrompt = `You are a planning assistant for a technical conversation. Given the user's message, any active task tracker state, and recent conversation history, reason briefly about your approach for this turn.
 
 Respond with a short reasoning trace (2-5 sentences) covering:
-1. What from memory is directly relevant (or note if nothing applies)
-2. Any gaps — what you'd need to verify or cannot confirm from memory
+1. What the user is asking about and what context would be relevant
+2. Any gaps — what you'd need to verify or cannot confirm
 3. Your planned approach for this turn
 4. Whether any tools are needed and why
+5. A SEARCH line with 3-5 keywords optimized for memory retrieval (e.g., "SEARCH: CrewAI memory architecture comparison recent")
 
 Be concise. This is a gate check, not a response.`
 
@@ -71,6 +72,7 @@ var sharedContextPatterns = regexp.MustCompile(
 		`you mentioned|our (plan|approach|design|architecture|decision)|` +
 		`what happened with|where did we leave)\b`)
 
+var searchLineRe = regexp.MustCompile(`(?im)^SEARCH:\s*(.+)$`)
 var confidenceRe = regexp.MustCompile(`(?i)CONFIDENCE:\s*([\d.]+)`)
 var confidenceStripRe = regexp.MustCompile(`(?i)\n*CONFIDENCE:\s*[\d.]+\s*\z`)
 
@@ -104,6 +106,16 @@ func shouldEscalateStructurally(userMessage, context string) (bool, string) {
 		return true, "shared-history query with no memory context"
 	}
 	return false, ""
+}
+
+// parseSearchLine extracts the SEARCH query from a planning trace.
+// Returns the query string, or empty string if no SEARCH line found.
+func parseSearchLine(trace string) string {
+	match := searchLineRe.FindStringSubmatch(trace)
+	if match == nil {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
 }
 
 func parseConfidence(text string) *float64 {
@@ -315,26 +327,33 @@ func (ce *ChatEngine) runPlanning(ctx context.Context, userMessage, memCtx, trac
 func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, contentBlocks any, emit func(SSEEvent)) {
 	t0 := time.Now()
 
-	// 1. Retrieve memory context
-	emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Retrieving memory..."}})
-	memCtx := ce.Memory.GetContext(ctx, userMessage)
-	tMemory := time.Now()
-
-	// 2. Planning phase: reason about approach before generating response
+	// 1. Planning phase: reason about approach BEFORE retrieval
 	planningTrace := ""
-	tPlanning := tMemory
+	tPlanning := t0
 	if ce.Config.PlanningModel != "" {
 		emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Planning..."}})
 		trackerState, trackerErr := ce.Memory.GetLastTrackerState(ctx)
 		if trackerErr != nil {
 			log.Printf("planning: tracker state error: %v", trackerErr)
 		}
-		planningTrace = ce.runPlanning(ctx, userMessage, memCtx, trackerState)
+		planningTrace = ce.runPlanning(ctx, userMessage, "", trackerState)
 		tPlanning = time.Now()
 		if planningTrace != "" && ce.Config.Verbose {
 			log.Printf("planning: trace=%q", planningTrace)
 		}
 	}
+
+	// 2. Retrieve memory context using reformulated query from planning
+	emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Retrieving memory..."}})
+	retrievalQuery := userMessage
+	if searchQuery := parseSearchLine(planningTrace); searchQuery != "" {
+		retrievalQuery = searchQuery
+		if ce.Config.Verbose {
+			log.Printf("planning: using SEARCH query=%q", searchQuery)
+		}
+	}
+	memCtx := ce.Memory.GetContext(ctx, retrievalQuery)
+	tMemory := time.Now()
 
 	// 3. Build system prompt (with planning trace appended if available)
 	narrative := ""
@@ -443,8 +462,8 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	emit(SSEEvent{Type: "done", Data: map[string]any{
 		"type": "done",
 		"timing": map[string]any{
-			"memory_ms":   int(tMemory.Sub(t0).Milliseconds()),
-			"planning_ms": int(tPlanning.Sub(tMemory).Milliseconds()),
+			"planning_ms": int(tPlanning.Sub(t0).Milliseconds()),
+			"memory_ms":   int(tMemory.Sub(tPlanning).Milliseconds()),
 			"total_ms":    int(tDone.Sub(t0).Milliseconds()),
 		},
 		"escalated":         escalated,
@@ -537,13 +556,36 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 
 // ChatNonStreaming runs the chat loop without streaming and returns the response.
 func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, contentBlocks any) string {
-	// Retrieve memory context
-	memCtx := ce.Memory.GetContext(ctx, userMessage)
+	// 1. Planning phase: reason about approach BEFORE retrieval
+	planningTrace := ""
+	if ce.Config.PlanningModel != "" {
+		trackerState, trackerErr := ce.Memory.GetLastTrackerState(ctx)
+		if trackerErr != nil {
+			log.Printf("planning: tracker state error: %v", trackerErr)
+		}
+		planningTrace = ce.runPlanning(ctx, userMessage, "", trackerState)
+		if planningTrace != "" && ce.Config.Verbose {
+			log.Printf("planning: trace=%q", planningTrace)
+		}
+	}
+
+	// 2. Retrieve memory context using reformulated query from planning
+	retrievalQuery := userMessage
+	if searchQuery := parseSearchLine(planningTrace); searchQuery != "" {
+		retrievalQuery = searchQuery
+		if ce.Config.Verbose {
+			log.Printf("planning: using SEARCH query=%q", searchQuery)
+		}
+	}
+	memCtx := ce.Memory.GetContext(ctx, retrievalQuery)
 	narrative := ""
 	if ce.Narrative != nil {
 		narrative = ce.Narrative.GetNarrative()
 	}
 	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, narrative, ce.Config.ProjectTargets)
+	if planningTrace != "" {
+		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
+	}
 
 	messages := make([]map[string]any, len(ce.History))
 	copy(messages, ce.History)
