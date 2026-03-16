@@ -80,6 +80,7 @@ type ChatEngine struct {
 	Memory      *mimne.Mimne
 	Tools       *ToolExecutor
 	Config      *config.Config
+	Narrative   *NarrativeChecker
 	History     []map[string]any // ephemeral conversation history
 }
 
@@ -415,6 +416,11 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		ce.Memory.LogResponse(ctx, summary)
 	}
 
+	// 9b. Daily narrative staleness check
+	if ce.Narrative != nil {
+		ce.Narrative.MaybeCheck(ctx)
+	}
+
 	// 10. Update ephemeral history
 	ce.History = append(ce.History, map[string]any{"role": "user", "content": userMessage})
 	if responseText != "" {
@@ -578,6 +584,11 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 			summary = summary[:500]
 		}
 		ce.Memory.LogResponse(ctx, summary)
+	}
+
+	// Daily narrative staleness check
+	if ce.Narrative != nil {
+		ce.Narrative.MaybeCheck(ctx)
 	}
 
 	ce.History = append(ce.History, map[string]any{"role": "user", "content": userMessage})
