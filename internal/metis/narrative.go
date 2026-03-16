@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,8 +102,8 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 	if len(facts) > 0 {
 		text, err := generateNarrativeFromFacts(ctx, nc.cfg.PlanningModel, facts)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "narrative: facts generation failed: %v\n", err)
-			return
+			fmt.Fprintf(os.Stderr, "narrative: LLM facts generation failed, falling back to local format: %v\n", err)
+			text = mimne.FormatProjectFacts(facts)
 		}
 		if err := writeNarrativeFile(nc.cfg.NarrativeFile, text); err != nil {
 			fmt.Fprintf(os.Stderr, "narrative: %v\n", err)
@@ -233,12 +234,13 @@ func generateNarrative(ctx context.Context, model string, learnings []narrativeL
 	return text, nil
 }
 
-// generateNarrativeFromFacts calls Haiku to synthesize project facts into natural prose.
+// generateNarrativeFromFacts calls the planning model to synthesize project facts into natural prose.
 func generateNarrativeFromFacts(ctx context.Context, model string, facts []mimne.ProjectFact) (string, error) {
-	var userContent string
+	var b strings.Builder
 	for i, f := range facts {
-		userContent += fmt.Sprintf("%d. %s / %s: %s\n", i+1, f.Entity, f.Attribute, f.Value)
+		fmt.Fprintf(&b, "%d. %s / %s: %s\n", i+1, f.Entity, f.Attribute, f.Value)
 	}
+	userContent := b.String()
 
 	text, err := planningComplete(ctx, model, factsNarrativeSystemPrompt, userContent)
 	if err != nil {
