@@ -100,7 +100,7 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 		fmt.Fprintf(os.Stderr, "narrative: project_facts query failed: %v\n", err)
 	}
 	if len(facts) > 0 {
-		text, err := generateNarrativeFromFacts(ctx, nc.cfg.PlanningModel, facts)
+		text, err := generateNarrativeFromFacts(ctx, nc.cfg.AnthropicModel, facts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "narrative: LLM facts generation failed, falling back to local format: %v\n", err)
 			text = mimne.FormatProjectFacts(facts)
@@ -134,7 +134,7 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 		return
 	}
 
-	text, err := generateNarrative(ctx, nc.cfg.PlanningModel, learnings)
+	text, err := generateNarrative(ctx, nc.cfg.AnthropicModel, learnings)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "narrative: generation failed: %v\n", err)
 		return
@@ -216,7 +216,7 @@ func queryNarrativeLearnings(ctx context.Context, pool *pgxpool.Pool) ([]narrati
 	return results, rows.Err()
 }
 
-// generateNarrative calls Haiku to summarize the learnings into a narrative document.
+// generateNarrative calls the configured Anthropic model (METIS_MODEL) to summarize the learnings into a narrative document.
 func generateNarrative(ctx context.Context, model string, learnings []narrativeLearning) (string, error) {
 	var userContent string
 	for i, l := range learnings {
@@ -234,7 +234,7 @@ func generateNarrative(ctx context.Context, model string, learnings []narrativeL
 	return text, nil
 }
 
-// generateNarrativeFromFacts calls the planning model to synthesize project facts into natural prose.
+// generateNarrativeFromFacts calls the configured Anthropic model (METIS_MODEL) to synthesize project facts into natural prose.
 func generateNarrativeFromFacts(ctx context.Context, model string, facts []mimne.ProjectFact) (string, error) {
 	var b strings.Builder
 	for i, f := range facts {
