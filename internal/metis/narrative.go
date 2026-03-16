@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,16 @@ Rules:
 - Include only information present in the learnings. Do not infer or extrapolate.
 - If learnings contradict each other, use the one with higher reinforcement count.
 - Keep total output under 60 lines.`
+
+const factsNarrativeSystemPrompt = `You generate a concise project background document from a set of structured project facts.
+The output will be injected into an AI assistant's context as background knowledge it already possesses.
+
+Rules:
+- Write natural, terse prose organized by topic (not by entity name).
+- State facts directly as things you know: "Krisis is written in Go" not "krisis.implementation_language: Go"
+- Group related facts into short paragraphs (2-3 sentences each).
+- Do not list entity names or attribute names — synthesize them into readable knowledge.
+- Keep total output under 40 lines.`
 
 const maxNarrativeLearnings = 40
 
@@ -82,14 +93,18 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	nc.lastNarrativeCheck = today
 
-	// Check for project_facts first — if they exist, use them directly
-	// instead of LLM-generating from learnings.
+	// Check for project_facts first — if they exist, generate narrative
+	// via LLM to produce natural prose instead of a raw config dump.
 	facts, err := mimne.QueryProjectFactsFromPool(ctx, nc.pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "narrative: project_facts query failed: %v\n", err)
 	}
 	if len(facts) > 0 {
-		text := mimne.FormatProjectFacts(facts)
+		text, err := generateNarrativeFromFacts(ctx, nc.cfg.PlanningModel, facts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "narrative: LLM facts generation failed, falling back to local format: %v\n", err)
+			text = mimne.FormatProjectFacts(facts)
+		}
 		if err := writeNarrativeFile(nc.cfg.NarrativeFile, text); err != nil {
 			fmt.Fprintf(os.Stderr, "narrative: %v\n", err)
 			return
@@ -213,6 +228,21 @@ func generateNarrative(ctx context.Context, model string, learnings []narrativeL
 	}
 
 	text, err := planningComplete(ctx, model, narrativeSystemPrompt, userContent)
+	if err != nil {
+		return "", fmt.Errorf("LLM call: %w", err)
+	}
+	return text, nil
+}
+
+// generateNarrativeFromFacts calls the planning model to synthesize project facts into natural prose.
+func generateNarrativeFromFacts(ctx context.Context, model string, facts []mimne.ProjectFact) (string, error) {
+	var b strings.Builder
+	for i, f := range facts {
+		fmt.Fprintf(&b, "%d. %s / %s: %s\n", i+1, f.Entity, f.Attribute, f.Value)
+	}
+	userContent := b.String()
+
+	text, err := planningComplete(ctx, model, factsNarrativeSystemPrompt, userContent)
 	if err != nil {
 		return "", fmt.Errorf("LLM call: %w", err)
 	}
