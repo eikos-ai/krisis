@@ -53,6 +53,9 @@ func main() {
 		provider = metis.NewAnthropicProvider(cfg)
 	}
 
+	// Initialize daily narrative checker (also runs at startup)
+	narrativeChecker := metis.NewNarrativeChecker(ctx, cfg, pool)
+
 	// Build allowed roots for file tools from project config
 	allowedRoots := make(map[string]string)
 	for name, t := range cfg.ProjectTargets {
@@ -74,10 +77,11 @@ func main() {
 	}
 
 	engine := &metis.ChatEngine{
-		Provider: provider,
-		Memory:   mem,
-		Tools:    toolExec,
-		Config:   cfg,
+		Provider:  provider,
+		Memory:    mem,
+		Tools:     toolExec,
+		Config:    cfg,
+		Narrative: narrativeChecker,
 	}
 
 	// Hydrate conversation history from DB

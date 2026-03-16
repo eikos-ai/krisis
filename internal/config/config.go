@@ -45,6 +45,7 @@ type Config struct {
 	PanelsDir          string
 
 	// Project narrative (curated context injected into system prompt)
+	NarrativeFile    string // resolved path to narrative file
 	ProjectNarrative string
 
 	// File access (override/addition via env var)
@@ -175,10 +176,10 @@ func (c *Config) loadProjectFile() {
 	c.ProjectName = proj.Name
 	c.ProjectDescription = proj.Description
 	if proj.NarrativeFile != "" {
-		narPath := expandTilde(proj.NarrativeFile)
-		narData, narErr := os.ReadFile(narPath)
+		c.NarrativeFile = expandTilde(proj.NarrativeFile)
+		narData, narErr := os.ReadFile(c.NarrativeFile)
 		if narErr != nil {
-			fmt.Fprintf(os.Stderr, "config: could not read narrative file %s: %v\n", narPath, narErr)
+			fmt.Fprintf(os.Stderr, "config: could not read narrative file %s: %v\n", c.NarrativeFile, narErr)
 		} else {
 			c.ProjectNarrative = string(narData)
 		}
