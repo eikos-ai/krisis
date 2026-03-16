@@ -14,7 +14,12 @@ See `docs/memory_architecture_draft_v1.pdf` for the full architecture descriptio
 
 - **Persistent memory**: Stores learnings, decisions, and conversation history in PostgreSQL. Retrieves relevant context (grounded facts, prior discussions, semantic matches) on every request.
 - **Dual-mode retrieval**: Full-text search + vector semantic search over stored memories using `all-MiniLM-L6-v2` embeddings.
-- **Tool use**: The agent can read/write files, search the web (Brave), query and store memories, and list directories.
+- **Plan-before-retrieve**: A planning LLM reformulates the user's query into optimized search terms before retrieval runs, dramatically improving recall for vague or context-dependent queries.
+- **Project narrative**: Auto-generated project background document injected into the agent's context via `<project_knowledge>` XML tags. Generated daily from project facts using Haiku.
+- **Project facts**: Structured entity-attribute pairs (the Observation Network) that capture what IS true about a project, separate from episodic learnings about what HAPPENED. Feed narrative generation.
+- **Discussion tracker**: LLM-classified design discussions tracked as mimne nodes, separate from regex-triggered task trackers. Produces conclusion-based learnings when resolved.
+- **Write-time truth verification**: LLM contradiction check on `store_learning` prevents stale or contradictory facts from accumulating — catches semantic conflicts that embedding similarity alone misses.
+- **Tool use**: The agent can read/write files, search the web (Brave), fetch URL content, query and store memories, invoke Claude Code, and list directories.
 - **Streaming chat**: SSE-based streaming with real-time tool use events and status updates.
 - **Model escalation**: Automatically escalates to a more capable model when the agent signals low confidence or when structural signals indicate missing context.
 - **LLM backends**: Supports Anthropic API directly or AWS Bedrock.
@@ -135,6 +140,9 @@ Full list of variables:
 | `BRAVE_API_KEY` | — | Optional, enables web search |
 | `ALLOWED_PATHS` | — | Comma-separated paths the agent can access |
 | `METIS_PROJECT` | — | Path to project config JSON |
+| `METIS_MODEL_PLANNING` | `claude-haiku-4-5-20251001` | Planning and query reformulation model |
+| `CONFIDENCE_THRESHOLD` | `0.7` | Escalation threshold |
+| `METIS_PANELS_DIR` | — | Domain panel files directory |
 | `METIS_VERBOSE` | `false` | Verbose logging |
 | `AWS_REGION` | `us-east-1` | For Bedrock provider |
 | `BEDROCK_MODEL` | see `config.go` | For Bedrock provider |
@@ -217,7 +225,8 @@ krisis/
 │   │   └── config.go        # Environment-based configuration
 │   ├── metis/               # Chat engine and HTTP server
 │   │   ├── server.go        # HTTP server, SSE streaming, routes
-│   │   ├── chat.go          # Chat loop, tool orchestration, escalation
+│   │   ├── chat.go          # Chat loop, planning, tool orchestration, escalation
+│   │   ├── narrative.go     # Daily narrative generation from project facts or learnings
 │   │   ├── tools.go         # Tool definitions and execution
 │   │   ├── provider.go      # LLM provider interface
 │   │   ├── anthropic.go     # Anthropic API backend
@@ -227,7 +236,11 @@ krisis/
 │       ├── embed.go         # ONNX text embeddings (384-dim vectors)
 │       ├── session.go       # Conversation session management
 │       ├── retrieval.go     # Memory retrieval (text + vector)
-│       ├── tracker.go       # Task/topic tracking nodes
+│       ├── consolidate.go   # Delta-triplet detection and truth verification
+│       ├── project_facts.go # Project fact storage and retrieval (entity-attribute pairs)
+│       ├── discussion_tracker.go # LLM-classified discussion tracking
+│       ├── task_tracker.go  # Regex-triggered task tracking
+│       ├── tracker.go       # Shared tracker types
 │       └── ...              # Supporting types and DB operations
 ├── models/
 │   └── all-MiniLM-L6-v2/   # ONNX embedding model (downloaded separately)
@@ -364,9 +377,17 @@ export ALLOWED_PATHS=/home/user/projects,/home/user/docs
 
 ## Development status
 
-Krisis is early-stage software. The core loop — chat, memory retrieval, tool use, streaming — works and is in active use. The following areas are incomplete or subject to change:
+Krisis is early-stage software, open-sourced under the MIT license (March 2026). The core loop — chat, memory retrieval, tool use, streaming — works and is in active use. Recent additions:
 
-- **Memory graph schema**: Still evolving; tracker nodes and delta triplet detection are recent additions
+- **Plan-before-retrieve**: Haiku reformulates queries before retrieval, replacing raw-message search
+- **Project facts + narrative generation**: Structured entity-attribute storage (Observation Network) with daily LLM-generated prose narratives injected as project knowledge
+- **Discussion tracker**: LLM-classified design discussions, separate from regex-based task trackers
+- **Write-time truth verification**: LLM contradiction checks on `store_learning`
+
+The memory architecture is described in `docs/memory_architecture_draft_v1.pdf`.
+
+The following areas are incomplete or subject to change:
+
 - **Escalation heuristics**: Confidence-based escalation is functional but not well-tuned
 - **Project configuration**: The `METIS_PROJECT` config format is undocumented and in flux
 - **Error handling**: Several failure modes (DB connectivity, ONNX load failures) degrade silently rather than failing loudly
@@ -379,3 +400,5 @@ Contributions and bug reports are welcome, but expect the codebase to move quick
 ## How krisis builds things
 
 Krisis uses a briefing-based coordination pattern between its conversational agent (Metis) and a developer agent (Claude Code). Metis writes task specifications to a local `BRIEFING.md` file, then invokes Claude Code to read the briefing and execute the implementation. The briefing serves as the interface between architectural decisions and code changes. This same pattern is used both to develop krisis itself and to build domain-specific tools on top of it.
+
+Before generating a response, Metis runs a planning phase (using Haiku) that reformulates the user's query into optimized search terms. These reformulated terms drive memory retrieval instead of the raw message, so vague references like "that CrewAI thing" resolve to the right stored context. The planning trace and retrieved memories — along with auto-generated project narrative from `<project_knowledge>` — feed into the main generation call.
