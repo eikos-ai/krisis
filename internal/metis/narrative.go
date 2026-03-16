@@ -216,7 +216,7 @@ func queryNarrativeLearnings(ctx context.Context, pool *pgxpool.Pool) ([]narrati
 	return results, rows.Err()
 }
 
-// generateNarrative calls the main model to summarize the learnings into a narrative document.
+// generateNarrative calls the configured Anthropic model (METIS_MODEL) to summarize the learnings into a narrative document.
 func generateNarrative(ctx context.Context, model string, learnings []narrativeLearning) (string, error) {
 	var userContent string
 	for i, l := range learnings {
@@ -234,7 +234,7 @@ func generateNarrative(ctx context.Context, model string, learnings []narrativeL
 	return text, nil
 }
 
-// generateNarrativeFromFacts calls the main model to synthesize project facts into natural prose.
+// generateNarrativeFromFacts calls the configured Anthropic model (METIS_MODEL) to synthesize project facts into natural prose.
 func generateNarrativeFromFacts(ctx context.Context, model string, facts []mimne.ProjectFact) (string, error) {
 	var b strings.Builder
 	for i, f := range facts {
