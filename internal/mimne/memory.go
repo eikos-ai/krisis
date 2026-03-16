@@ -404,6 +404,8 @@ func (m *Mimne) StoreLearning(ctx context.Context, text, source, domain, correct
 				fmt.Fprintf(os.Stderr, "mimne: truth-verify CreateDeltaTriplet failed for prior=%s: %v\n", priorID, err)
 			}
 		}
+	} else if len(llmSuperseded) > 0 {
+		fmt.Fprintf(os.Stderr, "mimne: truth-verify found supersessions but no event ID in buffer (superseded=%d)\n", len(llmSuperseded))
 	}
 
 	result, _ := json.Marshal(map[string]any{
