@@ -39,6 +39,8 @@ var systemPrompt = `Today is {today}.
 {project}
 You are a technical assistant with memory of past conversations, provided as context below. Use it naturally, as if you know it. Never announce retrieval or say things like "based on my memory" or "I found relevant context." Verified corrections and facts override your training knowledge.
 
+Project knowledge: treat <project_knowledge> content as internalized background. Answer from it directly as things you know — never quote, paraphrase, or reference it as a document.
+
 Communication style:
 - Be direct and terse. No preamble, no filler, no "Great question!" openings, no "Let me" narration.
 - Write in short prose paragraphs. No bullet points, no numbered lists, no headers, unless explicitly asked.
@@ -119,7 +121,7 @@ func stripConfidence(text string) string {
 	return strings.TrimSpace(confidenceStripRe.ReplaceAllString(text, ""))
 }
 
-func buildSystemPrompt(ctx, projectName, projectDesc string, targets map[string]config.ProjectTarget) string {
+func buildSystemPrompt(ctx, projectName, projectDesc, projectNarrative string, targets map[string]config.ProjectTarget) string {
 	today := time.Now().Format("Monday, January 02, 2006")
 	s := strings.Replace(systemPrompt, "{today}", today, 1)
 
@@ -182,6 +184,9 @@ func buildSystemPrompt(ctx, projectName, projectDesc string, targets map[string]
 
 	s = strings.Replace(s, "\n{context}", sm.String()+"\n{context}", 1)
 
+	if projectNarrative != "" {
+		ctx = "<project_knowledge>\n" + strings.TrimSpace(projectNarrative) + "\n</project_knowledge>\n\n" + ctx
+	}
 	if ctx == "" {
 		ctx = "(No relevant context retrieved.)"
 	}
@@ -331,7 +336,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	}
 
 	// 3. Build system prompt (with planning trace appended if available)
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectTargets)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectNarrative, ce.Config.ProjectTargets)
 	if planningTrace != "" {
 		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
 	}
@@ -524,7 +529,7 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, contentBlocks any) string {
 	// Retrieve memory context
 	memCtx := ce.Memory.GetContext(ctx, userMessage)
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectTargets)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectNarrative, ce.Config.ProjectTargets)
 
 	messages := make([]map[string]any, len(ce.History))
 	copy(messages, ce.History)
