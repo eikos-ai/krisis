@@ -37,10 +37,12 @@ func (m *Mimne) Init(ctx context.Context) {
 	m.Session.HydrateBuffer(ctx, 20)
 }
 
-// GetContext retrieves memory context for a user message. Called deterministically
-// before every LLM call.
-func (m *Mimne) GetContext(ctx context.Context, userMessage string) string {
-	// Persist the user message
+// GetContext persists the user message and retrieves memory context.
+// Called deterministically before every LLM call.
+// userMessage is always persisted as the human turn.
+// retrievalQuery is used for embedding/search; if empty, userMessage is used.
+func (m *Mimne) GetContext(ctx context.Context, userMessage, retrievalQuery string) string {
+	// Persist the actual user message (never the reformulated query)
 	turnID, err := m.Session.PersistTurn(ctx, "human", userMessage)
 	if err != nil {
 		// Non-fatal: continue without persistence
@@ -48,10 +50,16 @@ func (m *Mimne) GetContext(ctx context.Context, userMessage string) string {
 	}
 	m.Session.BufferTurn("human", userMessage, turnID)
 
+	// Use retrievalQuery for search if provided, otherwise userMessage
+	searchText := retrievalQuery
+	if searchText == "" {
+		searchText = userMessage
+	}
+
 	// Extract terms, classify intent, embed
-	terms := ExtractSearchTerms(userMessage)
-	intent := classifyQueryType(userMessage)
-	msgEmbedding := m.Embedder.EmbedText(userMessage)
+	terms := ExtractSearchTerms(searchText)
+	intent := classifyQueryType(searchText)
+	msgEmbedding := m.Embedder.EmbedText(searchText)
 	vecStr := formatVector(msgEmbedding)
 
 	// Inventory preamble: lightweight domain counts
@@ -70,7 +78,7 @@ func (m *Mimne) GetContext(ctx context.Context, userMessage string) string {
 		fallbackSQL := strings.ReplaceAll(retrievalSQL,
 			"to_tsquery('english', $1)",
 			"websearch_to_tsquery('english', $1)")
-		rows, err = m.Pool.Query(ctx, fallbackSQL, userMessage, vecStr)
+		rows, err = m.Pool.Query(ctx, fallbackSQL, searchText, vecStr)
 		if err != nil {
 			// No DB results, try buffer only
 			return m.formatBufferOnly(terms)

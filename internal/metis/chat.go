@@ -352,7 +352,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 			log.Printf("planning: using SEARCH query=%q", searchQuery)
 		}
 	}
-	memCtx := ce.Memory.GetContext(ctx, retrievalQuery)
+	memCtx := ce.Memory.GetContext(ctx, userMessage, retrievalQuery)
 	tMemory := time.Now()
 
 	// 3. Build system prompt (with planning trace appended if available)
@@ -577,7 +577,7 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 			log.Printf("planning: using SEARCH query=%q", searchQuery)
 		}
 	}
-	memCtx := ce.Memory.GetContext(ctx, retrievalQuery)
+	memCtx := ce.Memory.GetContext(ctx, userMessage, retrievalQuery)
 	narrative := ""
 	if ce.Narrative != nil {
 		narrative = ce.Narrative.GetNarrative()
