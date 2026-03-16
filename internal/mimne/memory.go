@@ -356,32 +356,53 @@ func (m *Mimne) StoreLearning(ctx context.Context, text, source, domain, correct
 		}
 	}
 
+	// Find the most recent persisted turn ID for use as event node in edges.
+	var eventID string
+	for i := len(recent) - 1; i >= 0; i-- {
+		if recent[i].TurnID != "" {
+			eventID = recent[i].TurnID
+			break
+		}
+	}
+
 	// Detect and commit delta triplets (automatic supersession detection).
 	// Requires a known event node; skip silently if the buffer has no persisted turns.
 	candidates, detErr := m.DetectDeltaTriplets(ctx, newID, 5)
 	if detErr != nil {
 		fmt.Fprintf(os.Stderr, "mimne: DetectDeltaTriplets error for learning %s: %v\n", newID, detErr)
-	} else if len(candidates) > 0 {
-		var eventID string
-		for i := len(recent) - 1; i >= 0; i-- {
-			turn := recent[i]
-			if turn.TurnID != "" {
-				eventID = turn.TurnID
-				break
+	} else if len(candidates) > 0 && eventID != "" {
+		for _, candidate := range candidates {
+			fmt.Fprintf(os.Stderr, "mimne: attempting delta-triplet: prior=%s new=%s similarity=%.4f correctionSignal=%v\n",
+				candidate.PriorID, newID, candidate.Similarity, candidate.HasCorrectionSignal)
+			_, err := m.CreateDeltaTriplet(ctx, candidate.PriorID, newID, eventID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "mimne: CreateDeltaTriplet failed for prior=%s new=%s: %v\n",
+					candidate.PriorID, newID, err)
 			}
 		}
-		if eventID != "" {
-			for _, candidate := range candidates {
-				fmt.Fprintf(os.Stderr, "mimne: attempting delta-triplet: prior=%s new=%s similarity=%.4f correctionSignal=%v\n",
-					candidate.PriorID, newID, candidate.Similarity, candidate.HasCorrectionSignal)
-				_, err := m.CreateDeltaTriplet(ctx, candidate.PriorID, newID, eventID)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "mimne: CreateDeltaTriplet failed for prior=%s new=%s: %v\n",
-						candidate.PriorID, newID, err)
-				}
+	} else if len(candidates) > 0 {
+		fmt.Fprintf(os.Stderr, "mimne: delta-triplet candidates found but no event ID in buffer (candidates=%d)\n", len(candidates))
+	}
+
+	// LLM-mediated truth verification: check candidates with similarity > 0.5
+	// that weren't already caught by the embedding-threshold supersession above.
+	// The LLM can detect semantic contradictions that embedding distance misses.
+	alreadySuperseded := make(map[string]bool)
+	if detErr == nil {
+		for _, c := range candidates {
+			alreadySuperseded[c.PriorID] = true
+		}
+	}
+	llmSuperseded, tvErr := m.TruthVerifySupersession(ctx, newID, text, alreadySuperseded)
+	if tvErr != nil {
+		fmt.Fprintf(os.Stderr, "mimne: truth-verify error for learning %s: %v\n", newID, tvErr)
+	} else if len(llmSuperseded) > 0 && eventID != "" {
+		for _, priorID := range llmSuperseded {
+			fmt.Fprintf(os.Stderr, "mimne: truth-verify committing supersession: prior=%s new=%s\n", priorID, newID)
+			_, err := m.CreateDeltaTriplet(ctx, priorID, newID, eventID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "mimne: truth-verify CreateDeltaTriplet failed for prior=%s: %v\n", priorID, err)
 			}
-		} else {
-			fmt.Fprintf(os.Stderr, "mimne: delta-triplet candidates found but no event ID in buffer (candidates=%d)\n", len(candidates))
 		}
 	}
 

@@ -302,6 +302,128 @@ ORDER BY created_at DESC`)
 	return results, nil
 }
 
+// truthVerifyThreshold is the minimum cosine similarity for LLM-mediated
+// contradiction checking. Lower than supersessionThreshold because the LLM
+// can detect semantic contradictions that embedding distance misses
+// (e.g., "Python/FastAPI" vs "Go single-binary" are about the same attribute
+// with contradictory values but have low embedding similarity).
+const truthVerifyThreshold = 0.5
+
+const truthVerifySystemPrompt = `You are a knowledge consistency checker. A new learning is being stored in a knowledge base. Determine whether the new learning contradicts or updates any of the existing learnings listed below.
+
+For each existing learning, reply with exactly one line in this format:
+<id>: YES or NO - one sentence reason
+
+YES means the new learning contradicts, corrects, or replaces the existing one — they describe the same attribute, fact, or decision but with a different or updated value.
+NO means they are compatible, complementary, or about different things.
+
+Be precise: two learnings about the same project but different attributes are NOT contradictions.`
+
+// TruthVerifySupersession performs LLM-mediated contradiction checking for a
+// newly stored learning. It queries candidates with similarity > 0.5 (lower
+// than the embedding-only supersession threshold), asks Haiku whether the new
+// learning contradicts or updates each one, and returns the IDs that the LLM
+// judged as contradicted.
+//
+// This catches semantic contradictions that embedding distance alone misses,
+// such as "implementation language is Python" vs "implementation language is Go".
+func (m *Mimne) TruthVerifySupersession(ctx context.Context, newLearningID, newText string, alreadySuperseded map[string]bool) ([]string, error) {
+	// Fetch the stored embedding for the new learning.
+	var newVecStr string
+	err := m.Pool.QueryRow(ctx,
+		`SELECT embedding::text FROM nodes WHERE id = $1::uuid AND embedding IS NOT NULL`,
+		newLearningID,
+	).Scan(&newVecStr)
+	if err != nil {
+		return nil, fmt.Errorf("fetch embedding for %s: %w", newLearningID, err)
+	}
+
+	// Query top 10 similar non-superseded learnings with similarity > 0.5.
+	rows, err := m.Pool.Query(ctx, `
+SELECT
+    id,
+    content->>'text' AS text,
+    (1.0 - (embedding <=> $1::vector)) AS similarity
+FROM nodes
+WHERE node_type = 'learning'
+  AND superseded_by IS NULL
+  AND id != $2::uuid
+  AND embedding IS NOT NULL
+  AND (1.0 - (embedding <=> $1::vector)) > $3
+ORDER BY embedding <=> $1::vector
+LIMIT 10`,
+		newVecStr, newLearningID, truthVerifyThreshold,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query truth-verify candidates: %w", err)
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		id         string
+		text       string
+		similarity float64
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.text, &c.similarity); err != nil {
+			continue
+		}
+		// Skip candidates already superseded by the embedding-threshold check.
+		if alreadySuperseded[c.id] {
+			continue
+		}
+		candidates = append(candidates, c)
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	// Build the user prompt listing the new learning and candidates.
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "NEW LEARNING:\n%s\n\nEXISTING LEARNINGS:\n", newText)
+	for _, c := range candidates {
+		fmt.Fprintf(&sb, "%s: %s\n", c.id, strings.TrimSpace(c.text))
+	}
+
+	resp, err := llmComplete(ctx, TrackerModel, truthVerifySystemPrompt, sb.String(), 500)
+	if err != nil {
+		return nil, fmt.Errorf("LLM truth-verify call: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "mimne: truth-verify LLM response:\n%s\n", resp)
+
+	// Parse YES lines from the response.
+	var supersededIDs []string
+	for _, line := range strings.Split(resp, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Expected format: "<uuid>: YES - reason" or "<uuid>: NO - reason"
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		id := strings.TrimSpace(parts[0])
+		verdict := strings.TrimSpace(parts[1])
+		if strings.HasPrefix(strings.ToUpper(verdict), "YES") {
+			// Verify this ID is actually in our candidate set.
+			for _, c := range candidates {
+				if c.id == id {
+					supersededIDs = append(supersededIDs, id)
+					fmt.Fprintf(os.Stderr, "mimne: truth-verify SUPERSEDE %s (sim=%.3f): %s\n", id, c.similarity, verdict)
+					break
+				}
+			}
+		}
+	}
+
+	return supersededIDs, nil
+}
+
 // DeltaTripletJSON serializes a DeltaTriplet to JSON for tool output.
 func DeltaTripletJSON(t *DeltaTriplet) string {
 	b, _ := json.Marshal(t)
