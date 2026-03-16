@@ -3,7 +3,9 @@ package metis
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -31,15 +33,23 @@ type NarrativeChecker struct {
 
 	mu                 sync.Mutex
 	lastNarrativeCheck time.Time // date (truncated to day) of last check
+	narrative          string    // current narrative text, guarded by mu
 }
 
 // NewNarrativeChecker creates a checker and runs the initial startup check.
 func NewNarrativeChecker(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool) *NarrativeChecker {
-	nc := &NarrativeChecker{cfg: cfg, pool: pool}
+	nc := &NarrativeChecker{cfg: cfg, pool: pool, narrative: cfg.ProjectNarrative}
 	if cfg.NarrativeFile != "" {
 		nc.runCheck(ctx)
 	}
 	return nc
+}
+
+// GetNarrative returns the current narrative text, safe for concurrent use.
+func (nc *NarrativeChecker) GetNarrative() string {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	return nc.narrative
 }
 
 // MaybeCheck is called after every turn. It compares today's date against
@@ -49,7 +59,8 @@ func (nc *NarrativeChecker) MaybeCheck(ctx context.Context) {
 		return
 	}
 
-	today := time.Now().Truncate(24 * time.Hour)
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 
 	nc.mu.Lock()
 	alreadyChecked := !nc.lastNarrativeCheck.IsZero() && !today.After(nc.lastNarrativeCheck)
@@ -66,7 +77,8 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
 
-	today := time.Now().Truncate(24 * time.Hour)
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	nc.lastNarrativeCheck = today
 
 	stale, err := narrativeIsStale(ctx, nc.cfg.NarrativeFile, nc.pool)
@@ -88,18 +100,22 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 		return
 	}
 
-	text, err := generateNarrative(ctx, learnings)
+	text, err := generateNarrative(ctx, nc.cfg.PlanningModel, learnings)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "narrative: generation failed: %v\n", err)
 		return
 	}
 
+	if err := os.MkdirAll(filepath.Dir(nc.cfg.NarrativeFile), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "narrative: failed to create directory for %s: %v\n", nc.cfg.NarrativeFile, err)
+		return
+	}
 	if err := os.WriteFile(nc.cfg.NarrativeFile, []byte(text), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "narrative: failed to write %s: %v\n", nc.cfg.NarrativeFile, err)
 		return
 	}
 
-	nc.cfg.ProjectNarrative = text
+	nc.narrative = text
 	fmt.Fprintf(os.Stderr, "narrative: regenerated %s from %d learnings\n", nc.cfg.NarrativeFile, len(learnings))
 }
 
@@ -162,6 +178,7 @@ func queryNarrativeLearnings(ctx context.Context, pool *pgxpool.Pool) ([]narrati
 	for rows.Next() {
 		var l narrativeLearning
 		if err := rows.Scan(&l.Text, &l.Source, &l.AccessCount, &l.DerivedFromDisc); err != nil {
+			log.Printf("narrative: rows.Scan error: %v", err)
 			continue
 		}
 		results = append(results, l)
@@ -170,7 +187,7 @@ func queryNarrativeLearnings(ctx context.Context, pool *pgxpool.Pool) ([]narrati
 }
 
 // generateNarrative calls Haiku to summarize the learnings into a narrative document.
-func generateNarrative(ctx context.Context, learnings []narrativeLearning) (string, error) {
+func generateNarrative(ctx context.Context, model string, learnings []narrativeLearning) (string, error) {
 	var userContent string
 	for i, l := range learnings {
 		sourceLabel := l.Source
@@ -180,7 +197,7 @@ func generateNarrative(ctx context.Context, learnings []narrativeLearning) (stri
 		userContent += fmt.Sprintf("%d. [%s, reinforcement=%d] %s\n", i+1, sourceLabel, l.AccessCount, l.Text)
 	}
 
-	text, err := planningComplete(ctx, "claude-haiku-4-5-20251001", narrativeSystemPrompt, userContent)
+	text, err := planningComplete(ctx, model, narrativeSystemPrompt, userContent)
 	if err != nil {
 		return "", fmt.Errorf("LLM call: %w", err)
 	}

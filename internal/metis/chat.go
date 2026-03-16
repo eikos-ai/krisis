@@ -337,7 +337,11 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	}
 
 	// 3. Build system prompt (with planning trace appended if available)
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectNarrative, ce.Config.ProjectTargets)
+	narrative := ""
+	if ce.Narrative != nil {
+		narrative = ce.Narrative.GetNarrative()
+	}
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, narrative, ce.Config.ProjectTargets)
 	if planningTrace != "" {
 		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
 	}
@@ -416,9 +420,9 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		ce.Memory.LogResponse(ctx, summary)
 	}
 
-	// 9b. Daily narrative staleness check
+	// 9b. Daily narrative staleness check (background — don't block response)
 	if ce.Narrative != nil {
-		ce.Narrative.MaybeCheck(ctx)
+		go ce.Narrative.MaybeCheck(context.Background())
 	}
 
 	// 10. Update ephemeral history
@@ -535,7 +539,11 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, contentBlocks any) string {
 	// Retrieve memory context
 	memCtx := ce.Memory.GetContext(ctx, userMessage)
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, ce.Config.ProjectNarrative, ce.Config.ProjectTargets)
+	narrative := ""
+	if ce.Narrative != nil {
+		narrative = ce.Narrative.GetNarrative()
+	}
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, narrative, ce.Config.ProjectTargets)
 
 	messages := make([]map[string]any, len(ce.History))
 	copy(messages, ce.History)
@@ -586,9 +594,9 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 		ce.Memory.LogResponse(ctx, summary)
 	}
 
-	// Daily narrative staleness check
+	// Daily narrative staleness check (background — don't block response)
 	if ce.Narrative != nil {
-		ce.Narrative.MaybeCheck(ctx)
+		go ce.Narrative.MaybeCheck(context.Background())
 	}
 
 	ce.History = append(ce.History, map[string]any{"role": "user", "content": userMessage})
