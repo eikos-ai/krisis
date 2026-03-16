@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/eikos-io/krisis/internal/config"
+	"github.com/eikos-io/krisis/internal/mimne"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -81,6 +82,24 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	nc.lastNarrativeCheck = today
 
+	// Check for project_facts first — if they exist, use them directly
+	// instead of LLM-generating from learnings.
+	facts, err := mimne.QueryProjectFactsFromPool(ctx, nc.pool)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "narrative: project_facts query failed: %v\n", err)
+	}
+	if len(facts) > 0 {
+		text := mimne.FormatProjectFacts(facts)
+		if err := writeNarrativeFile(nc.cfg.NarrativeFile, text); err != nil {
+			fmt.Fprintf(os.Stderr, "narrative: %v\n", err)
+			return
+		}
+		nc.narrative = text
+		fmt.Fprintf(os.Stderr, "narrative: generated from %d project_facts\n", len(facts))
+		return
+	}
+
+	// No project_facts — fall back to LLM generation from learnings.
 	stale, err := narrativeIsStale(ctx, nc.cfg.NarrativeFile, nc.pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "narrative: staleness check failed: %v\n", err)
@@ -106,12 +125,8 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(nc.cfg.NarrativeFile), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "narrative: failed to create directory for %s: %v\n", nc.cfg.NarrativeFile, err)
-		return
-	}
-	if err := os.WriteFile(nc.cfg.NarrativeFile, []byte(text), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "narrative: failed to write %s: %v\n", nc.cfg.NarrativeFile, err)
+	if err := writeNarrativeFile(nc.cfg.NarrativeFile, text); err != nil {
+		fmt.Fprintf(os.Stderr, "narrative: %v\n", err)
 		return
 	}
 
@@ -202,4 +217,16 @@ func generateNarrative(ctx context.Context, model string, learnings []narrativeL
 		return "", fmt.Errorf("LLM call: %w", err)
 	}
 	return text, nil
+}
+
+// writeNarrativeFile writes the narrative text to the configured file path,
+// creating parent directories as needed.
+func writeNarrativeFile(filePath, text string) error {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
+	}
+	if err := os.WriteFile(filePath, []byte(text), 0644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", filePath, err)
+	}
+	return nil
 }

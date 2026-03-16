@@ -11,7 +11,9 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- Core tables (same structure as v1, minor additions)
 CREATE TABLE nodes (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    node_type       TEXT NOT NULL,  -- learning, conversation, turn, chunk, synthesis, task_tracker, discussion_tracker
+    node_type       TEXT NOT NULL,  -- learning, conversation, turn, chunk, synthesis, task_tracker, discussion_tracker, project_fact
+    -- project_fact content schema: {"entity": "string", "attribute": "string", "value": "string", "source_learning_id": "uuid or empty"}
+    -- Deduplicated by entity+attribute; superseded_by used when value changes.
     content         JSONB NOT NULL DEFAULT '{}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     accessed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -49,6 +51,9 @@ CREATE INDEX idx_nodes_created ON nodes(created_at);
 CREATE INDEX idx_nodes_accessed ON nodes(accessed_at);
 CREATE INDEX idx_nodes_superseded ON nodes(superseded_by) WHERE superseded_by IS NULL;
 CREATE INDEX idx_nodes_domain ON nodes((content->>'domain')) WHERE node_type = 'learning';
+
+CREATE UNIQUE INDEX idx_project_fact_entity_attr ON nodes ((content->>'entity'), (content->>'attribute'))
+    WHERE node_type = 'project_fact' AND superseded_by IS NULL;
 
 CREATE INDEX idx_edges_source ON edges(source_id);
 CREATE INDEX idx_edges_target ON edges(target_id);
