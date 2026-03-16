@@ -24,6 +24,16 @@ Rules:
 - If learnings contradict each other, use the one with higher reinforcement count.
 - Keep total output under 60 lines.`
 
+const factsNarrativeSystemPrompt = `You generate a concise project background document from a set of structured project facts.
+The output will be injected into an AI assistant's context as background knowledge it already possesses.
+
+Rules:
+- Write natural, terse prose organized by topic (not by entity name).
+- State facts directly as things you know: "Krisis is written in Go" not "krisis.implementation_language: Go"
+- Group related facts into short paragraphs (2-3 sentences each).
+- Do not list entity names or attribute names — synthesize them into readable knowledge.
+- Keep total output under 40 lines.`
+
 const maxNarrativeLearnings = 40
 
 // NarrativeChecker runs the daily staleness check for the project narrative.
@@ -82,14 +92,18 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	nc.lastNarrativeCheck = today
 
-	// Check for project_facts first — if they exist, use them directly
-	// instead of LLM-generating from learnings.
+	// Check for project_facts first — if they exist, generate narrative
+	// via LLM to produce natural prose instead of a raw config dump.
 	facts, err := mimne.QueryProjectFactsFromPool(ctx, nc.pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "narrative: project_facts query failed: %v\n", err)
 	}
 	if len(facts) > 0 {
-		text := mimne.FormatProjectFacts(facts)
+		text, err := generateNarrativeFromFacts(ctx, nc.cfg.PlanningModel, facts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "narrative: facts generation failed: %v\n", err)
+			return
+		}
 		if err := writeNarrativeFile(nc.cfg.NarrativeFile, text); err != nil {
 			fmt.Fprintf(os.Stderr, "narrative: %v\n", err)
 			return
@@ -213,6 +227,20 @@ func generateNarrative(ctx context.Context, model string, learnings []narrativeL
 	}
 
 	text, err := planningComplete(ctx, model, narrativeSystemPrompt, userContent)
+	if err != nil {
+		return "", fmt.Errorf("LLM call: %w", err)
+	}
+	return text, nil
+}
+
+// generateNarrativeFromFacts calls Haiku to synthesize project facts into natural prose.
+func generateNarrativeFromFacts(ctx context.Context, model string, facts []mimne.ProjectFact) (string, error) {
+	var userContent string
+	for i, f := range facts {
+		userContent += fmt.Sprintf("%d. %s / %s: %s\n", i+1, f.Entity, f.Attribute, f.Value)
+	}
+
+	text, err := planningComplete(ctx, model, factsNarrativeSystemPrompt, userContent)
 	if err != nil {
 		return "", fmt.Errorf("LLM call: %w", err)
 	}
