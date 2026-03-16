@@ -11,7 +11,9 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- Core tables (same structure as v1, minor additions)
 CREATE TABLE nodes (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    node_type       TEXT NOT NULL,  -- learning, conversation, turn, chunk, synthesis, task_tracker, discussion_tracker
+    node_type       TEXT NOT NULL,  -- learning, conversation, turn, chunk, synthesis, task_tracker, discussion_tracker, project_fact
+    -- project_fact content schema: {"entity": "string", "attribute": "string", "value": "string", "source_learning_id": "uuid or empty"}
+    -- Deduplicated by entity+attribute; superseded_by used when value changes.
     content         JSONB NOT NULL DEFAULT '{}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     accessed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
