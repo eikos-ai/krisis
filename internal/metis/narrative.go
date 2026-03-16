@@ -84,7 +84,7 @@ func (nc *NarrativeChecker) runCheck(ctx context.Context) {
 
 	// Check for project_facts first — if they exist, use them directly
 	// instead of LLM-generating from learnings.
-	facts, err := queryProjectFacts(ctx, nc.pool)
+	facts, err := mimne.QueryProjectFactsFromPool(ctx, nc.pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "narrative: project_facts query failed: %v\n", err)
 	}
@@ -217,30 +217,6 @@ func generateNarrative(ctx context.Context, model string, learnings []narrativeL
 		return "", fmt.Errorf("LLM call: %w", err)
 	}
 	return text, nil
-}
-
-// queryProjectFacts returns all non-superseded project_facts from the database.
-func queryProjectFacts(ctx context.Context, pool *pgxpool.Pool) ([]mimne.ProjectFact, error) {
-	rows, err := pool.Query(ctx, `
-		SELECT content->>'entity', content->>'attribute', content->>'value'
-		FROM nodes
-		WHERE node_type = 'project_fact'
-		  AND superseded_by IS NULL
-		ORDER BY content->>'entity', content->>'attribute'`)
-	if err != nil {
-		return nil, fmt.Errorf("query project_facts: %w", err)
-	}
-	defer rows.Close()
-
-	var facts []mimne.ProjectFact
-	for rows.Next() {
-		var f mimne.ProjectFact
-		if err := rows.Scan(&f.Entity, &f.Attribute, &f.Value); err != nil {
-			continue
-		}
-		facts = append(facts, f)
-	}
-	return facts, rows.Err()
 }
 
 // writeNarrativeFile writes the narrative text to the configured file path,

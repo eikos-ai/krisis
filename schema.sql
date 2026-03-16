@@ -52,6 +52,9 @@ CREATE INDEX idx_nodes_accessed ON nodes(accessed_at);
 CREATE INDEX idx_nodes_superseded ON nodes(superseded_by) WHERE superseded_by IS NULL;
 CREATE INDEX idx_nodes_domain ON nodes((content->>'domain')) WHERE node_type = 'learning';
 
+CREATE UNIQUE INDEX idx_project_fact_entity_attr ON nodes ((content->>'entity'), (content->>'attribute'))
+    WHERE node_type = 'project_fact' AND superseded_by IS NULL;
+
 CREATE INDEX idx_edges_source ON edges(source_id);
 CREATE INDEX idx_edges_target ON edges(target_id);
 CREATE INDEX idx_edges_type ON edges(edge_type);
