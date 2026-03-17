@@ -650,7 +650,7 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 
 	// Prepend scoping instruction so Claude Code stays within the target directory
 	if resolvedDir != "" {
-		task = fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory.\n\n%s", resolvedDir, task)
+		task = fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory. --- %s", resolvedDir, task)
 	}
 
 	// Build command args
@@ -676,11 +676,12 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 
 	output, err := cmd.CombinedOutput()
 
-	if err != nil {
-		// Diagnostic: log raw output on failure only
+	if os.Getenv("METIS_VERBOSE") == "true" {
 		preview := string(output[:min(len(output), 100)])
 		log.Printf("tool: claude_code raw output: %d bytes, first 100: %q", len(output), preview)
+	}
 
+	if err != nil {
 		if cmdCtx.Err() == context.DeadlineExceeded {
 			return `{"error": "claude_code timed out after 5 minutes"}`
 		}
