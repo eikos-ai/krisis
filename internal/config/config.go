@@ -11,8 +11,9 @@ import (
 
 // ProjectTarget represents a named project directory with an optional semantic role.
 type ProjectTarget struct {
-	Path string
-	Role string
+	Path         string
+	Role         string
+	AllowedTools string // comma-separated tool whitelist for claude_code (e.g. "Read,Write,Edit,Bash")
 }
 
 type Config struct {
@@ -186,17 +187,18 @@ func (c *Config) loadProjectFile() {
 	}
 	c.ProjectTargets = make(map[string]ProjectTarget, len(proj.Paths))
 	for name, raw := range proj.Paths {
-		// Try object form first: {"path": "...", "role": "..."}
+		// Try object form first: {"path": "...", "role": "...", "allowed_tools": "..."}
 		var obj struct {
-			Path string `json:"path"`
-			Role string `json:"role"`
+			Path         string `json:"path"`
+			Role         string `json:"role"`
+			AllowedTools string `json:"allowed_tools"`
 		}
 		if err := json.Unmarshal(raw, &obj); err == nil && obj.Path != "" {
 			absPath := expandTilde(obj.Path)
 			if _, statErr := os.Stat(absPath); statErr != nil {
 				fmt.Fprintf(os.Stderr, "config: target %q path does not exist: %s\n", name, absPath)
 			}
-			c.ProjectTargets[name] = ProjectTarget{Path: absPath, Role: obj.Role}
+			c.ProjectTargets[name] = ProjectTarget{Path: absPath, Role: obj.Role, AllowedTools: obj.AllowedTools}
 			continue
 		}
 		// Fall back to plain string
