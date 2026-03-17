@@ -71,9 +71,10 @@ func main() {
 	}
 
 	toolExec := &metis.ToolExecutor{
-		AllowedRoots: allowedRoots,
-		Memory:       mem,
-		BraveAPIKey:  cfg.BraveAPIKey,
+		AllowedRoots:   allowedRoots,
+		ProjectTargets: cfg.ProjectTargets,
+		Memory:         mem,
+		BraveAPIKey:    cfg.BraveAPIKey,
 	}
 
 	engine := &metis.ChatEngine{

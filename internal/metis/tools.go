@@ -23,6 +23,7 @@ import (
 
 	readability "codeberg.org/readeck/go-readability/v2"
 
+	"github.com/eikos-io/krisis/internal/config"
 	"github.com/eikos-io/krisis/internal/mimne"
 )
 
@@ -170,9 +171,10 @@ func canonicalTools() []map[string]any {
 
 // ToolExecutor handles tool execution with path validation and memory access.
 type ToolExecutor struct {
-	AllowedRoots map[string]string // name -> absolute path
-	Memory       *mimne.Mimne
-	BraveAPIKey  string
+	AllowedRoots   map[string]string                // name -> absolute path
+	ProjectTargets map[string]config.ProjectTarget   // name -> full target config (for per-target settings)
+	Memory         *mimne.Mimne
+	BraveAPIKey    string
 }
 
 func (te *ToolExecutor) sortedRootKeys() []string {
@@ -640,9 +642,11 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 		// (krisis always wins alphabetically over panels, so panels is never selected)
 		if root, ok := te.AllowedRoots["krisis"]; ok {
 			resolvedDir = root
+			target = "krisis"
 		} else if len(te.AllowedRoots) > 0 {
 			for _, k := range te.sortedRootKeys() {
 				resolvedDir = te.AllowedRoots[k]
+				target = k
 				break
 			}
 		}
@@ -659,7 +663,15 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 		args = append(args, "--resume", sessionID)
 	}
 	if allowedTools == "" {
-		allowedTools = "Read,Write,Edit"
+		// Check per-target configuration
+		if target != "" && te.ProjectTargets != nil {
+			if pt, ok := te.ProjectTargets[target]; ok && pt.AllowedTools != "" {
+				allowedTools = pt.AllowedTools
+			}
+		}
+		if allowedTools == "" {
+			allowedTools = "Read,Write,Edit"
+		}
 	}
 	args = append(args, "--allowedTools", allowedTools)
 
