@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -219,7 +220,16 @@ func (te *ToolExecutor) resolveAndValidate(pathStr string, write bool) (string, 
 
 	// Check each allowed root
 	for name, root := range te.AllowedRoots {
-		if strings.HasPrefix(resolved, root) {
+		cleanRoot := filepath.Clean(root)
+		cleanResolved := filepath.Clean(resolved)
+		// Use filepath.Rel to prevent sibling directory prefix attacks (e.g. C:\allowed matching C:\allowed2)
+		relRoot, relResolved := cleanRoot, cleanResolved
+		if runtime.GOOS == "windows" {
+			relRoot = strings.ToLower(relRoot)
+			relResolved = strings.ToLower(relResolved)
+		}
+		rel, relErr := filepath.Rel(relRoot, relResolved)
+		if relErr == nil && !strings.HasPrefix(rel, "..") {
 			if !write {
 				return resolved, nil
 			}
@@ -664,16 +674,23 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 
 	log.Printf("tool: claude_code exec: claude %s", strings.Join(args, " "))
 
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
+
 	if err != nil {
+		// Diagnostic: log raw output on failure only
+		preview := string(output[:min(len(output), 100)])
+		log.Printf("tool: claude_code raw output: %d bytes, first 100: %q", len(output), preview)
+
 		if cmdCtx.Err() == context.DeadlineExceeded {
 			return `{"error": "claude_code timed out after 5 minutes"}`
 		}
-		// Include stderr if available
-		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
-			return fmt.Sprintf(`{"error": "claude_code failed: %s", "stderr": %q}`, err, string(exitErr.Stderr))
+		outputPreview := string(output[:min(len(output), 500)])
+		errResp := map[string]any{
+			"error":          fmt.Sprintf("claude_code failed: %s", err),
+			"output_preview": outputPreview,
 		}
-		return fmt.Sprintf(`{"error": "claude_code failed: %s"}`, err)
+		out, _ := json.Marshal(errResp)
+		return string(out)
 	}
 
 	// Parse stream-json: scan for the final "result" message
