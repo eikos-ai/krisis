@@ -676,8 +676,10 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 
 	output, err := cmd.CombinedOutput()
 
-	preview := string(output[:min(len(output), 100)])
-	log.Printf("tool: claude_code raw output: %d bytes, first 100: %q", len(output), preview)
+	if os.Getenv("METIS_VERBOSE") == "true" {
+		preview := string(output[:min(len(output), 100)])
+		log.Printf("tool: claude_code raw output: %d bytes, first 100: %q", len(output), preview)
+	}
 
 	if err != nil {
 		if cmdCtx.Err() == context.DeadlineExceeded {
