@@ -235,16 +235,19 @@ func (te *ToolExecutor) resolveAndValidate(pathStr string, write bool) (string, 
 			if !write {
 				return resolved, nil
 			}
-			// Write access: krisis root denies all raw writes (use update_briefing or claude_code).
-			// mimne and metis roots are read-only.
-			// All other roots deny writes entirely.
+			// BRIEFING.md is always protected regardless of root.
+			if filepath.Base(resolved) == "BRIEFING.md" {
+				return "", fmt.Errorf("access denied: use the update_briefing tool to modify BRIEFING.md")
+			}
+			// Write access: krisis root denies all raw writes (use claude_code).
+			// Other roots allow writes only if they have AllowedTools configured.
 			if name == "krisis" {
-				if filepath.Base(resolved) == "BRIEFING.md" {
-					return "", fmt.Errorf("access denied: use the update_briefing tool to modify BRIEFING.md")
-				}
 				return "", fmt.Errorf("access denied: use Claude Code via the claude_code tool to modify files in %s", name)
 			}
-			return "", fmt.Errorf("access denied: write not permitted in %s. Got: %s", name, filepath.Base(resolved))
+			if pt, ok := te.ProjectTargets[name]; ok && pt.AllowedTools != "" {
+				return resolved, nil
+			}
+			return "", fmt.Errorf("access denied: writes not permitted for target %s", name)
 		}
 	}
 
@@ -655,6 +658,14 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 	// Prepend scoping instruction so Claude Code stays within the target directory
 	if resolvedDir != "" {
 		task = fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory. --- %s", resolvedDir, task)
+	}
+
+	// Windows cmd.exe mangles newlines in -p argument; flatten to spaces.
+	// Replace \r\n first, then lone \r, then lone \n to handle all platforms.
+	if runtime.GOOS == "windows" {
+		task = strings.ReplaceAll(task, "\r\n", " ")
+		task = strings.ReplaceAll(task, "\r", " ")
+		task = strings.ReplaceAll(task, "\n", " ")
 	}
 
 	// Build command args
