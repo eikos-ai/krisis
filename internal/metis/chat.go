@@ -324,7 +324,7 @@ func (ce *ChatEngine) runPlanning(ctx context.Context, userMessage, memCtx, trac
 }
 
 // ChatStreaming runs the full chat loop and sends SSE events to the callback.
-func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, contentBlocks any, emit func(SSEEvent)) {
+func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, contentBlocks any, files []FileData, emit func(SSEEvent)) {
 	t0 := time.Now()
 
 	// 1. Planning phase: reason about approach BEFORE retrieval
@@ -365,9 +365,21 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
 	}
 
-	// 4. Build messages: history + current turn
-	messages := make([]map[string]any, len(ce.History))
-	copy(messages, ce.History)
+	// 4. Save attachments and build messages with hydration
+	var attachmentRefs []AttachmentRef
+	if len(files) > 0 && ce.Config.AttachmentsDir != "" {
+		for _, f := range files {
+			ref, err := SaveAttachment(ce.Config.AttachmentsDir, f)
+			if err != nil {
+				log.Printf("attachments: save failed for %s: %v", f.Filename, err)
+				continue
+			}
+			describeAttachment(ctx, ce.Config.AnthropicAPIKey, &ref)
+			attachmentRefs = append(attachmentRefs, ref)
+		}
+	}
+
+	messages := hydrateMessages(ce.History, userMessage, ce.Provider)
 	messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 
 	// 5. Escalation check
@@ -415,9 +427,8 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 			}})
 			emit(SSEEvent{Type: "clear_text", Data: map[string]any{"type": "clear_text"}})
 
-			// Rebuild messages from scratch
-			messages = make([]map[string]any, len(ce.History))
-			copy(messages, ce.History)
+			// Rebuild messages from scratch with hydration
+			messages = hydrateMessages(ce.History, userMessage, ce.Provider)
 			messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 
 			fullText = ce.runToolLoop(ctx, ce.Provider.EscalationModel(), system, messages, tools, emit)
@@ -444,8 +455,12 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 		go ce.Narrative.MaybeCheck(context.Background())
 	}
 
-	// 10. Update ephemeral history
-	ce.History = append(ce.History, map[string]any{"role": "user", "content": userMessage})
+	// 10. Update ephemeral history (store attachment refs as pointers, not raw data)
+	userEntry := map[string]any{"role": "user", "content": userMessage}
+	if len(attachmentRefs) > 0 {
+		userEntry["attachments"] = attachmentRefs
+	}
+	ce.History = append(ce.History, userEntry)
 	if responseText != "" {
 		ce.History = append(ce.History, map[string]any{"role": "assistant", "content": responseText})
 	}
@@ -555,7 +570,7 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 }
 
 // ChatNonStreaming runs the chat loop without streaming and returns the response.
-func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, contentBlocks any) string {
+func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, contentBlocks any, files []FileData) string {
 	// 1. Planning phase: reason about approach BEFORE retrieval
 	planningTrace := ""
 	if ce.Config.PlanningModel != "" {
@@ -587,8 +602,21 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
 	}
 
-	messages := make([]map[string]any, len(ce.History))
-	copy(messages, ce.History)
+	// Save attachments
+	var attachmentRefs []AttachmentRef
+	if len(files) > 0 && ce.Config.AttachmentsDir != "" {
+		for _, f := range files {
+			ref, err := SaveAttachment(ce.Config.AttachmentsDir, f)
+			if err != nil {
+				log.Printf("attachments: save failed for %s: %v", f.Filename, err)
+				continue
+			}
+			describeAttachment(ctx, ce.Config.AnthropicAPIKey, &ref)
+			attachmentRefs = append(attachmentRefs, ref)
+		}
+	}
+
+	messages := hydrateMessages(ce.History, userMessage, ce.Provider)
 	messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 
 	structuralEscalation, _ := shouldEscalateStructurally(userMessage, memCtx)
@@ -617,8 +645,7 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 		cleanText := stripConfidence(rawText)
 
 		if confidence != nil && *confidence < ce.Config.ConfidenceThreshold {
-			messages = make([]map[string]any, len(ce.History))
-			copy(messages, ce.History)
+			messages = hydrateMessages(ce.History, userMessage, ce.Provider)
 			messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 			fullText = ce.runToolLoopSync(ctx, ce.Provider.EscalationModel(), system, messages, tools)
 		} else {
@@ -641,7 +668,11 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 		go ce.Narrative.MaybeCheck(context.Background())
 	}
 
-	ce.History = append(ce.History, map[string]any{"role": "user", "content": userMessage})
+	userEntry := map[string]any{"role": "user", "content": userMessage}
+	if len(attachmentRefs) > 0 {
+		userEntry["attachments"] = attachmentRefs
+	}
+	ce.History = append(ce.History, userEntry)
 	if responseText != "" {
 		ce.History = append(ce.History, map[string]any{"role": "assistant", "content": responseText})
 	}

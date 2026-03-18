@@ -45,6 +45,9 @@ type Config struct {
 	ProjectTargets     map[string]ProjectTarget
 	PanelsDir          string
 
+	// Attachments (pointer-based image/document persistence)
+	AttachmentsDir string // directory for saved attachment files
+
 	// Project narrative (curated context injected into system prompt)
 	NarrativeFile    string // resolved path to narrative file
 	ProjectNarrative string
@@ -164,11 +167,12 @@ func (c *Config) loadProjectFile() {
 		return
 	}
 	var proj struct {
-		Name          string                     `json:"name"`
-		Description   string                     `json:"description"`
-		NarrativeFile string                     `json:"narrative_file"`
-		Paths         map[string]json.RawMessage `json:"paths"`
-		PanelsDir     string                     `json:"panels_dir"`
+		Name           string                     `json:"name"`
+		Description    string                     `json:"description"`
+		NarrativeFile  string                     `json:"narrative_file"`
+		AttachmentsDir string                     `json:"attachments_dir"`
+		Paths          map[string]json.RawMessage `json:"paths"`
+		PanelsDir      string                     `json:"panels_dir"`
 	}
 	if err := json.Unmarshal(data, &proj); err != nil {
 		fmt.Fprintf(os.Stderr, "config: failed to parse project file %s: %v\n", path, err)
@@ -185,6 +189,17 @@ func (c *Config) loadProjectFile() {
 			c.ProjectNarrative = string(narData)
 		}
 	}
+	// Attachments directory: explicit config, env var, or default next to project file.
+	// Note: METIS_ATTACHMENTS_DIR env var is only checked here inside loadProjectFile,
+	// so it has no effect without a project file. This is fine — Metis always has one.
+	if proj.AttachmentsDir != "" {
+		c.AttachmentsDir = expandTilde(proj.AttachmentsDir)
+	} else if envDir := os.Getenv("METIS_ATTACHMENTS_DIR"); envDir != "" {
+		c.AttachmentsDir = expandTilde(envDir)
+	} else {
+		c.AttachmentsDir = filepath.Join(filepath.Dir(path), "attachments")
+	}
+
 	c.ProjectTargets = make(map[string]ProjectTarget, len(proj.Paths))
 	for name, raw := range proj.Paths {
 		// Try object form first: {"path": "...", "role": "...", "allowed_tools": "..."}
