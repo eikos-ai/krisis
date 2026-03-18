@@ -53,6 +53,13 @@ func main() {
 		provider = metis.NewAnthropicProvider(cfg)
 	}
 
+	// Ensure attachments directory exists
+	if cfg.AttachmentsDir != "" {
+		if err := os.MkdirAll(cfg.AttachmentsDir, 0755); err != nil {
+			stderr.Fatalf("Failed to create attachments directory %s: %v", cfg.AttachmentsDir, err)
+		}
+	}
+
 	// Initialize daily narrative checker (also runs at startup)
 	narrativeChecker := metis.NewNarrativeChecker(ctx, cfg, pool)
 

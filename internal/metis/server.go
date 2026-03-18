@@ -168,7 +168,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	s.Engine.ChatStreaming(ctx, userMessage, contentBlocks, func(event SSEEvent) {
+	s.Engine.ChatStreaming(ctx, userMessage, contentBlocks, files, func(event SSEEvent) {
 		line := FormatSSEData(event.Data)
 		fmt.Fprint(w, line)
 		flusher.Flush()
@@ -192,7 +192,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contentBlocks := s.Engine.Provider.FormatContentBlocks(userMessage, nil)
-	responseText := s.Engine.ChatNonStreaming(r.Context(), userMessage, contentBlocks)
+	responseText := s.Engine.ChatNonStreaming(r.Context(), userMessage, contentBlocks, nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
