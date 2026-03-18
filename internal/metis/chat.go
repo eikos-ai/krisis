@@ -33,6 +33,7 @@ Respond with a short reasoning trace (2-5 sentences) covering:
 3. Your planned approach for this turn
 4. Whether any tools are needed and why
 5. A SEARCH line with 3-5 keywords optimized for memory retrieval (e.g., "SEARCH: CrewAI memory architecture comparison recent")
+6. If the user is asking you to recall, repeat, or reference something you previously said, output: RECALL: yes
 
 Be concise. This is a gate check, not a response.`
 
@@ -73,6 +74,12 @@ var sharedContextPatterns = regexp.MustCompile(
 		`what happened with|where did we leave)\b`)
 
 var searchLineRe = regexp.MustCompile(`(?im)^SEARCH:\s*(.+)$`)
+var recallLineRe = regexp.MustCompile(`(?im)^RECALL:\s*(yes|no)`)
+var recallPatternRe = regexp.MustCompile(
+	`(?i)\b(you said|we discussed|remind me|what did you say|can you recall|` +
+		`our conversation about|what was your take on|you told me|` +
+		`you mentioned earlier|what did we decide|you recommended|` +
+		`your suggestion about|what was your answer)\b`)
 var confidenceRe = regexp.MustCompile(`(?i)CONFIDENCE:\s*([\d.]+)`)
 var confidenceStripRe = regexp.MustCompile(`(?i)\n*CONFIDENCE:\s*[\d.]+\s*\z`)
 
@@ -116,6 +123,95 @@ func parseSearchLine(trace string) string {
 		return ""
 	}
 	return strings.TrimSpace(match[1])
+}
+
+// detectRecallMode returns true if the user is asking to recall prior conversation.
+// Uses both the LLM's RECALL signal from planning and a regex on the raw message.
+func detectRecallMode(userMessage, planningTrace string) bool {
+	// Check LLM signal
+	if match := recallLineRe.FindStringSubmatch(planningTrace); match != nil {
+		if strings.EqualFold(match[1], "yes") {
+			return true
+		}
+	}
+	// Belt-and-suspenders: regex on raw user message
+	return recallPatternRe.MatchString(userMessage)
+}
+
+// parseChunkTurn represents a single turn parsed from a chunk's preview text.
+type parseChunkTurn struct {
+	Role    string // "user" or "assistant"
+	Content string
+}
+
+// parseChunkTurns splits a chunk preview into individual turns.
+// Chunk format: "[human]: text\n[assistant]: text\n..."
+func parseChunkTurns(text string) []parseChunkTurn {
+	var turns []parseChunkTurn
+	var current parseChunkTurn
+
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "[human]: ") {
+			if current.Role != "" {
+				turns = append(turns, current)
+			}
+			current = parseChunkTurn{Role: "user", Content: strings.TrimPrefix(line, "[human]: ")}
+		} else if strings.HasPrefix(line, "[assistant]: ") {
+			if current.Role != "" {
+				turns = append(turns, current)
+			}
+			current = parseChunkTurn{Role: "assistant", Content: strings.TrimPrefix(line, "[assistant]: ")}
+		} else if current.Role != "" {
+			current.Content += "\n" + line
+		}
+	}
+	if current.Role != "" {
+		turns = append(turns, current)
+	}
+	return turns
+}
+
+// buildSyntheticMessages converts retrieved conversation chunks into synthetic
+// message pairs for the API call. These are prepended to the messages array
+// so the model sees them as prior exchanges it participated in.
+func buildSyntheticMessages(chunks []mimne.RetrievalResult) []map[string]any {
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	var msgs []map[string]any
+
+	// Frame the recalled context
+	msgs = append(msgs, map[string]any{
+		"role":    "user",
+		"content": "[The following is from a previous conversation, retrieved because you were asked to recall it:]",
+	})
+	msgs = append(msgs, map[string]any{
+		"role":    "assistant",
+		"content": "[Understood — I'll treat these as my prior exchanges.]",
+	})
+
+	for _, chunk := range chunks {
+		turns := parseChunkTurns(chunk.Text)
+		for _, turn := range turns {
+			msgs = append(msgs, map[string]any{
+				"role":    turn.Role,
+				"content": turn.Content,
+			})
+		}
+	}
+
+	// Ensure the synthetic block ends with an assistant turn so the next
+	// message (real history or current user turn) can be a user message
+	// without violating the alternating-roles requirement.
+	if len(msgs) > 0 && msgs[len(msgs)-1]["role"] == "user" {
+		msgs = append(msgs, map[string]any{
+			"role":    "assistant",
+			"content": "[End of recalled conversation.]",
+		})
+	}
+
+	return msgs
 }
 
 func parseConfidence(text string) *float64 {
@@ -352,7 +448,21 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 			log.Printf("planning: using SEARCH query=%q", searchQuery)
 		}
 	}
-	memCtx := ce.Memory.GetContext(ctx, userMessage, retrievalQuery)
+
+	recallMode := detectRecallMode(userMessage, planningTrace)
+	var memCtx string
+	var syntheticMessages []map[string]any
+
+	if recallMode {
+		var chunks []mimne.RetrievalResult
+		memCtx, chunks = ce.Memory.GetContextForRecall(ctx, userMessage, retrievalQuery)
+		syntheticMessages = buildSyntheticMessages(chunks)
+		if ce.Config.Verbose && len(chunks) > 0 {
+			log.Printf("recall: promoting %d chunks to synthetic messages", len(chunks))
+		}
+	} else {
+		memCtx = ce.Memory.GetContext(ctx, userMessage, retrievalQuery)
+	}
 	tMemory := time.Now()
 
 	// 3. Build system prompt (with planning trace appended if available)
@@ -380,6 +490,10 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	}
 
 	messages := hydrateMessages(ce.History, userMessage, ce.Provider)
+	// Prepend synthetic recalled messages (before real history, after hydration)
+	if len(syntheticMessages) > 0 {
+		messages = append(syntheticMessages, messages...)
+	}
 	messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 
 	// 5. Escalation check
@@ -429,6 +543,9 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 
 			// Rebuild messages from scratch with hydration
 			messages = hydrateMessages(ce.History, userMessage, ce.Provider)
+			if len(syntheticMessages) > 0 {
+				messages = append(syntheticMessages, messages...)
+			}
 			messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 
 			fullText = ce.runToolLoop(ctx, ce.Provider.EscalationModel(), system, messages, tools, emit)
@@ -592,7 +709,22 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 			log.Printf("planning: using SEARCH query=%q", searchQuery)
 		}
 	}
-	memCtx := ce.Memory.GetContext(ctx, userMessage, retrievalQuery)
+
+	recallMode := detectRecallMode(userMessage, planningTrace)
+	var memCtx string
+	var syntheticMessages []map[string]any
+
+	if recallMode {
+		var chunks []mimne.RetrievalResult
+		memCtx, chunks = ce.Memory.GetContextForRecall(ctx, userMessage, retrievalQuery)
+		syntheticMessages = buildSyntheticMessages(chunks)
+		if ce.Config.Verbose && len(chunks) > 0 {
+			log.Printf("recall: promoting %d chunks to synthetic messages", len(chunks))
+		}
+	} else {
+		memCtx = ce.Memory.GetContext(ctx, userMessage, retrievalQuery)
+	}
+
 	narrative := ""
 	if ce.Narrative != nil {
 		narrative = ce.Narrative.GetNarrative()
@@ -617,6 +749,9 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 	}
 
 	messages := hydrateMessages(ce.History, userMessage, ce.Provider)
+	if len(syntheticMessages) > 0 {
+		messages = append(syntheticMessages, messages...)
+	}
 	messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 
 	structuralEscalation, _ := shouldEscalateStructurally(userMessage, memCtx)
@@ -646,6 +781,9 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 
 		if confidence != nil && *confidence < ce.Config.ConfidenceThreshold {
 			messages = hydrateMessages(ce.History, userMessage, ce.Provider)
+			if len(syntheticMessages) > 0 {
+				messages = append(syntheticMessages, messages...)
+			}
 			messages = append(messages, map[string]any{"role": "user", "content": contentBlocks})
 			fullText = ce.runToolLoopSync(ctx, ce.Provider.EscalationModel(), system, messages, tools)
 		} else {

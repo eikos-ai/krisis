@@ -41,7 +41,9 @@ func (m *Mimne) Init(ctx context.Context) {
 // Called deterministically before every LLM call.
 // userMessage is always persisted as the human turn.
 // retrievalQuery is used for embedding/search; if empty, userMessage is used.
-func (m *Mimne) GetContext(ctx context.Context, userMessage, retrievalQuery string) string {
+// retrieve does the core retrieval work: persist turn, query DB, search buffer.
+// Returns structured results for the caller to format or filter.
+func (m *Mimne) retrieve(ctx context.Context, userMessage, retrievalQuery string) (results []RetrievalResult, bufferHits []bufferedTurn, inventoryLine string, intent string) {
 	// Persist the actual user message (never the reformulated query)
 	turnID, err := m.Session.PersistTurn(ctx, "human", userMessage)
 	if err != nil {
@@ -58,12 +60,12 @@ func (m *Mimne) GetContext(ctx context.Context, userMessage, retrievalQuery stri
 
 	// Extract terms, classify intent, embed
 	terms := ExtractSearchTerms(searchText)
-	intent := classifyQueryType(searchText)
+	intent = classifyQueryType(searchText)
 	msgEmbedding := m.Embedder.EmbedText(searchText)
 	vecStr := formatVector(msgEmbedding)
 
 	// Inventory preamble: lightweight domain counts
-	inventoryLine := m.queryInventoryPreamble(ctx)
+	inventoryLine = m.queryInventoryPreamble(ctx)
 
 	tsqueryStr := BuildTSQueryString(terms)
 	if tsqueryStr == "" {
@@ -81,12 +83,12 @@ func (m *Mimne) GetContext(ctx context.Context, userMessage, retrievalQuery stri
 		rows, err = m.Pool.Query(ctx, fallbackSQL, searchText, vecStr)
 		if err != nil {
 			// No DB results, try buffer only
-			return m.formatBufferOnly(terms)
+			bufferHits = m.Session.SearchBuffer(terms, 3)
+			return
 		}
 	}
 	defer rows.Close()
 
-	var results []RetrievalResult
 	for rows.Next() {
 		var r RetrievalResult
 		if err := rows.Scan(&r.ID, &r.ResultType, &r.Text, &r.Conversation, &r.Score, &r.Grounded); err != nil {
@@ -104,13 +106,44 @@ func (m *Mimne) GetContext(ctx context.Context, userMessage, retrievalQuery stri
 		_, _ = m.Pool.Exec(ctx, reinforceSQL, ids)
 	}
 
-	bufferHits := m.Session.SearchBuffer(terms, 3)
+	bufferHits = m.Session.SearchBuffer(terms, 3)
+	return
+}
 
+// GetContext persists the user message and retrieves memory context.
+// Called deterministically before every LLM call.
+// userMessage is always persisted as the human turn.
+// retrievalQuery is used for embedding/search; if empty, userMessage is used.
+func (m *Mimne) GetContext(ctx context.Context, userMessage, retrievalQuery string) string {
+	results, bufferHits, inventoryLine, intent := m.retrieve(ctx, userMessage, retrievalQuery)
 	if len(results) == 0 && len(bufferHits) == 0 {
 		return ""
 	}
-
 	return m.formatContext(results, bufferHits, inventoryLine, intent)
+}
+
+// GetContextForRecall retrieves memory context with conversation chunks separated
+// from the formatted context string. Returns the formatted context (excluding chunks)
+// and the raw chunk results, so the caller can promote chunks to synthetic messages.
+func (m *Mimne) GetContextForRecall(ctx context.Context, userMessage, retrievalQuery string) (string, []RetrievalResult) {
+	results, bufferHits, inventoryLine, intent := m.retrieve(ctx, userMessage, retrievalQuery)
+
+	var nonChunks []RetrievalResult
+	var chunks []RetrievalResult
+	for _, r := range results {
+		if r.ResultType == "chunk" {
+			chunks = append(chunks, r)
+		} else {
+			nonChunks = append(nonChunks, r)
+		}
+	}
+
+	formattedCtx := ""
+	if len(nonChunks) > 0 || len(bufferHits) > 0 {
+		formattedCtx = m.formatContext(nonChunks, bufferHits, inventoryLine, intent)
+	}
+
+	return formattedCtx, chunks
 }
 
 func (m *Mimne) formatBufferOnly(terms []string) string {
