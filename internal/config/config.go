@@ -189,7 +189,9 @@ func (c *Config) loadProjectFile() {
 			c.ProjectNarrative = string(narData)
 		}
 	}
-	// Attachments directory: explicit config, env var, or default next to project file
+	// Attachments directory: explicit config, env var, or default next to project file.
+	// Note: METIS_ATTACHMENTS_DIR env var is only checked here inside loadProjectFile,
+	// so it has no effect without a project file. This is fine — Metis always has one.
 	if proj.AttachmentsDir != "" {
 		c.AttachmentsDir = expandTilde(proj.AttachmentsDir)
 	} else if envDir := os.Getenv("METIS_ATTACHMENTS_DIR"); envDir != "" {

@@ -55,7 +55,7 @@ func main() {
 
 	// Ensure attachments directory exists
 	if cfg.AttachmentsDir != "" {
-		if err := os.MkdirAll(cfg.AttachmentsDir, 0755); err != nil {
+		if err := os.MkdirAll(cfg.AttachmentsDir, 0700); err != nil {
 			stderr.Fatalf("Failed to create attachments directory %s: %v", cfg.AttachmentsDir, err)
 		}
 	}

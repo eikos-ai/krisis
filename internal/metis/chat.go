@@ -374,8 +374,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 				log.Printf("attachments: save failed for %s: %v", f.Filename, err)
 				continue
 			}
-			// Generate description asynchronously
-			go describeAttachment(context.Background(), ce.Config.AnthropicAPIKey, &ref)
+			describeAttachment(ctx, ce.Config.AnthropicAPIKey, &ref)
 			attachmentRefs = append(attachmentRefs, ref)
 		}
 	}
@@ -612,7 +611,7 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 				log.Printf("attachments: save failed for %s: %v", f.Filename, err)
 				continue
 			}
-			go describeAttachment(context.Background(), ce.Config.AnthropicAPIKey, &ref)
+			describeAttachment(ctx, ce.Config.AnthropicAPIKey, &ref)
 			attachmentRefs = append(attachmentRefs, ref)
 		}
 	}

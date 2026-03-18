@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // AttachmentRef is a pointer to a saved attachment file.
@@ -26,23 +27,28 @@ type AttachmentRef struct {
 }
 
 // newUUID generates a UUID v4 string without external dependencies.
-func newUUID() string {
+func newUUID() (string, error) {
 	var buf [16]byte
-	_, _ = rand.Read(buf[:])
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("generate UUID: %w", err)
+	}
 	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
 	buf[8] = (buf[8] & 0x3f) | 0x80 // variant 2
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
+		buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
 }
 
 // SaveAttachment writes a file to the attachments directory with a UUID filename.
 func SaveAttachment(dir string, f FileData) (AttachmentRef, error) {
-	id := newUUID()
+	id, err := newUUID()
+	if err != nil {
+		return AttachmentRef{}, err
+	}
 	ext := filepath.Ext(f.Filename)
 	diskName := id + ext
 	path := filepath.Join(dir, diskName)
 
-	if err := os.WriteFile(path, f.Data, 0644); err != nil {
+	if err := os.WriteFile(path, f.Data, 0600); err != nil {
 		return AttachmentRef{}, fmt.Errorf("write attachment: %w", err)
 	}
 
@@ -54,9 +60,25 @@ func SaveAttachment(dir string, f FileData) (AttachmentRef, error) {
 	}, nil
 }
 
+const maxDescribeSize = 10 * 1024 * 1024 // 10MB
+
 // describeAttachment calls Haiku to generate a one-sentence description of an attachment.
-// Runs asynchronously; updates ref.Description in place.
+// Runs synchronously; updates ref.Description in place.
 func describeAttachment(ctx context.Context, apiKey string, ref *AttachmentRef) {
+	if apiKey == "" {
+		return
+	}
+
+	info, err := os.Stat(ref.Path)
+	if err != nil {
+		log.Printf("attachments: failed to stat %s for description: %v", ref.Path, err)
+		return
+	}
+	if info.Size() > maxDescribeSize {
+		log.Printf("attachments: skipping description for %s (%.1f MB exceeds 10 MB limit)", ref.Filename, float64(info.Size())/(1024*1024))
+		return
+	}
+
 	data, err := os.ReadFile(ref.Path)
 	if err != nil {
 		log.Printf("attachments: failed to read %s for description: %v", ref.Path, err)
@@ -90,6 +112,14 @@ func describeAttachment(ctx context.Context, apiKey string, ref *AttachmentRef) 
 		return
 	}
 
+	promptText := "Describe this image in one sentence for search indexing purposes. Be specific about what is shown — application names, data types, column headers, visible values."
+	if ref.ContentType == "application/pdf" {
+		promptText = "Describe this document in one sentence for search indexing purposes. Be specific about the subject, structure, and key content."
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	body := map[string]any{
 		"model":      "claude-haiku-4-5-20251001",
 		"max_tokens": 128,
@@ -100,7 +130,7 @@ func describeAttachment(ctx context.Context, apiKey string, ref *AttachmentRef) 
 					contentBlock,
 					{
 						"type": "text",
-						"text": "Describe this image in one sentence for search indexing purposes. Be specific about what is shown — application names, data types, column headers, visible values.",
+						"text": promptText,
 					},
 				},
 			},
