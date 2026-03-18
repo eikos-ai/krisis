@@ -37,11 +37,8 @@ func (m *Mimne) Init(ctx context.Context) {
 	m.Session.HydrateBuffer(ctx, 20)
 }
 
-// GetContext persists the user message and retrieves memory context.
-// Called deterministically before every LLM call.
-// userMessage is always persisted as the human turn.
-// retrievalQuery is used for embedding/search; if empty, userMessage is used.
-// retrieve does the core retrieval work: persist turn, query DB, search buffer.
+// retrieve does the core retrieval work: persist the user turn, query the DB
+// for matching nodes, and search the conversation buffer.
 // Returns structured results for the caller to format or filter.
 func (m *Mimne) retrieve(ctx context.Context, userMessage, retrievalQuery string) (results []RetrievalResult, bufferHits []bufferedTurn, inventoryLine string, intent string) {
 	// Persist the actual user message (never the reformulated query)
@@ -114,6 +111,7 @@ func (m *Mimne) retrieve(ctx context.Context, userMessage, retrievalQuery string
 // Called deterministically before every LLM call.
 // userMessage is always persisted as the human turn.
 // retrievalQuery is used for embedding/search; if empty, userMessage is used.
+// Returns a single formatted context string including all result types.
 func (m *Mimne) GetContext(ctx context.Context, userMessage, retrievalQuery string) string {
 	results, bufferHits, inventoryLine, intent := m.retrieve(ctx, userMessage, retrievalQuery)
 	if len(results) == 0 && len(bufferHits) == 0 {
@@ -141,6 +139,11 @@ func (m *Mimne) GetContextForRecall(ctx context.Context, userMessage, retrievalQ
 	formattedCtx := ""
 	if len(nonChunks) > 0 || len(bufferHits) > 0 {
 		formattedCtx = m.formatContext(nonChunks, bufferHits, inventoryLine, intent)
+	} else if len(chunks) > 0 {
+		// Chunks will be injected as synthetic messages, but we need a non-empty
+		// formattedCtx so shouldEscalateStructurally doesn't see empty context
+		// and trigger false escalation.
+		formattedCtx = "(recall context injected via synthetic messages)"
 	}
 
 	return formattedCtx, chunks
