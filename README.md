@@ -6,7 +6,7 @@ Krisis is a conversational agent system built around persistent memory. It runs 
 
 The system is built around two internal packages: **Metis** (the chat engine and web interface) and **Mimne** (the memory system). Postgres stores the memory graph; ONNX embeddings power semantic search over it.
 
-See `docs/memory_architecture_draft_v1.pdf` for the full architecture description, design rationale, and prior art survey.
+See `docs/memory_architecture_draft_v2.pdf` for the full architecture description, design rationale, and prior art survey.
 
 ---
 
