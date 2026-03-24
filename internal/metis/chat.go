@@ -383,6 +383,29 @@ func (ce *ChatEngine) runPlanning(ctx context.Context, userMessage, memCtx, trac
 	}
 	sb.WriteString("\n\n")
 
+	if ce.Config.ProjectName != "" {
+		sb.WriteString("PROJECT:\n")
+		sb.WriteString(ce.Config.ProjectName)
+		if ce.Config.ProjectDescription != "" {
+			sb.WriteString(" — " + ce.Config.ProjectDescription)
+		}
+		sb.WriteString("\n")
+		if len(ce.Config.ProjectTargets) > 0 {
+			for name, t := range ce.Config.ProjectTargets {
+				sb.WriteString(fmt.Sprintf("  Target: %s (%s)\n", name, t.Role))
+			}
+		}
+		if ce.Narrative != nil {
+			if narr := ce.Narrative.GetNarrative(); narr != "" {
+				if len(narr) > 500 {
+					narr = narr[:500]
+				}
+				sb.WriteString("  Context: " + narr + "\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+
 	if trackerState != "" {
 		sb.WriteString("ACTIVE TRACKER:\n")
 		sb.WriteString(trackerState)
@@ -609,6 +632,7 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 	messages []map[string]any, tools []map[string]any, emit func(SSEEvent)) []string {
 
 	var fullText []string
+	consecutiveClaudeCodeFailures := 0
 
 	for round := 0; round < maxToolRounds; round++ {
 		emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Thinking..."}})
@@ -668,12 +692,36 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 		var results []string
 		for _, tc := range toolCalls {
 			log.Printf("toolloop: executing tool=%q", tc.Name)
+
+			// Circuit breaker: skip claude_code after 2 consecutive failures
+			if tc.Name == "claude_code" && consecutiveClaudeCodeFailures >= 2 {
+				result := `{"error": "claude_code is unavailable this turn — suggest the change to the user instead."}`
+				results = append(results, result)
+				emit(SSEEvent{Type: "tool_result", Data: map[string]any{
+					"type":   "tool_result",
+					"id":     tc.ID,
+					"tool":   tc.Name,
+					"status": "error",
+				}})
+				continue
+			}
+
 			result := ce.Tools.ExecuteTool(ctx, tc.Name, tc.Input)
 			results = append(results, result)
 			status := "ok"
-			if strings.HasPrefix(result, "Error") {
+			if strings.HasPrefix(result, "Error") || strings.Contains(result, `"error"`) {
 				status = "error"
 			}
+
+			// Track consecutive claude_code failures
+			if tc.Name == "claude_code" {
+				if status == "error" {
+					consecutiveClaudeCodeFailures++
+				} else {
+					consecutiveClaudeCodeFailures = 0
+				}
+			}
+
 			emit(SSEEvent{Type: "tool_result", Data: map[string]any{
 				"type":   "tool_result",
 				"id":     tc.ID,
@@ -826,6 +874,7 @@ func (ce *ChatEngine) runToolLoopSync(ctx context.Context, model, system string,
 	messages []map[string]any, tools []map[string]any) []string {
 
 	var fullText []string
+	consecutiveClaudeCodeFailures := 0
 
 	for round := 0; round < maxToolRounds; round++ {
 		if round > 0 && len(fullText) > 0 {
@@ -867,8 +916,24 @@ func (ce *ChatEngine) runToolLoopSync(ctx context.Context, model, system string,
 		var results []string
 		for _, tc := range toolCalls {
 			log.Printf("toolloop-sync: executing tool=%q", tc.Name)
+
+			// Circuit breaker: skip claude_code after 2 consecutive failures
+			if tc.Name == "claude_code" && consecutiveClaudeCodeFailures >= 2 {
+				results = append(results, `{"error": "claude_code is unavailable this turn — suggest the change to the user instead."}`)
+				continue
+			}
+
 			result := ce.Tools.ExecuteTool(ctx, tc.Name, tc.Input)
 			results = append(results, result)
+
+			// Track consecutive claude_code failures
+			if tc.Name == "claude_code" {
+				if strings.HasPrefix(result, "Error") || strings.Contains(result, `"error"`) {
+					consecutiveClaudeCodeFailures++
+				} else {
+					consecutiveClaudeCodeFailures = 0
+				}
+			}
 		}
 		messages = append(messages, ce.Provider.MakeToolResults(toolCalls, results))
 	}

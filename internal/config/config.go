@@ -11,9 +11,11 @@ import (
 
 // ProjectTarget represents a named project directory with an optional semantic role.
 type ProjectTarget struct {
-	Path         string
-	Role         string
-	AllowedTools string // comma-separated tool whitelist for claude_code (e.g. "Read,Write,Edit,Bash")
+	Path             string
+	Role             string
+	AllowedTools     string // comma-separated tool whitelist for claude_code (e.g. "Read,Write,Edit,Bash")
+	BuildCommand     string // optional shell command to build/compile this target
+	ScopeInstruction string // optional custom scoping prefix for claude_code (replaces default "Work only within")
 }
 
 type Config struct {
@@ -204,16 +206,18 @@ func (c *Config) loadProjectFile() {
 	for name, raw := range proj.Paths {
 		// Try object form first: {"path": "...", "role": "...", "allowed_tools": "..."}
 		var obj struct {
-			Path         string `json:"path"`
-			Role         string `json:"role"`
-			AllowedTools string `json:"allowed_tools"`
+			Path             string `json:"path"`
+			Role             string `json:"role"`
+			AllowedTools     string `json:"allowed_tools"`
+			BuildCommand     string `json:"build_command"`
+			ScopeInstruction string `json:"scope_instruction"`
 		}
 		if err := json.Unmarshal(raw, &obj); err == nil && obj.Path != "" {
 			absPath := expandTilde(obj.Path)
 			if _, statErr := os.Stat(absPath); statErr != nil {
 				fmt.Fprintf(os.Stderr, "config: target %q path does not exist: %s\n", name, absPath)
 			}
-			c.ProjectTargets[name] = ProjectTarget{Path: absPath, Role: obj.Role, AllowedTools: obj.AllowedTools}
+			c.ProjectTargets[name] = ProjectTarget{Path: absPath, Role: obj.Role, AllowedTools: obj.AllowedTools, BuildCommand: obj.BuildCommand, ScopeInstruction: obj.ScopeInstruction}
 			continue
 		}
 		// Fall back to plain string
