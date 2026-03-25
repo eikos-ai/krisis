@@ -676,10 +676,19 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 
 	// Prepend scoping instruction so Claude Code stays within the target directory
 	if resolvedDir != "" {
-		scopeInstr := fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory.", resolvedDir)
+		baseScopeInstr := fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory.", resolvedDir)
+		scopeInstr := baseScopeInstr
 		if target != "" && te.ProjectTargets != nil {
 			if pt, ok := te.ProjectTargets[target]; ok && pt.ScopeInstruction != "" {
-				scopeInstr = pt.ScopeInstruction
+				custom := pt.ScopeInstruction
+				if strings.Contains(custom, "{dir}") {
+					// Replace {dir} placeholders with the resolved directory
+					custom = strings.ReplaceAll(custom, "{dir}", resolvedDir)
+					scopeInstr = custom
+				} else {
+					// Ensure the directory constraint is always present
+					scopeInstr = fmt.Sprintf("%s %s", custom, baseScopeInstr)
+				}
 			}
 		}
 		task = fmt.Sprintf("%s --- %s", scopeInstr, task)
@@ -729,10 +738,6 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 		log.Printf("tool: claude_code raw output: %d bytes, first 100: %q", len(output), preview)
 	}
 
-	if len(output) == 0 {
-		return `{"error": "claude_code returned no output — possible rate limit or startup failure"}`
-	}
-
 	if err != nil {
 		if cmdCtx.Err() == context.DeadlineExceeded {
 			return `{"error": "claude_code timed out after 5 minutes"}`
@@ -744,6 +749,10 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 		}
 		out, _ := json.Marshal(errResp)
 		return string(out)
+	}
+
+	if len(output) == 0 {
+		return `{"error": "claude_code returned no output — possible rate limit or startup failure"}`
 	}
 
 	// Parse stream-json: scan for the final "result" message
@@ -794,6 +803,8 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 	return string(out)
 }
 
+// TODO: Add authentication/authorization gating before production deployment.
+// Currently Metis HTTP endpoints have no auth, so any caller could trigger arbitrary builds.
 func (te *ToolExecutor) buildTarget(ctx context.Context, targetName string) string {
 	if targetName == "" {
 		return `{"error": "target is required"}`

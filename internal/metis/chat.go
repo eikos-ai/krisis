@@ -391,8 +391,18 @@ func (ce *ChatEngine) runPlanning(ctx context.Context, userMessage, memCtx, trac
 		}
 		sb.WriteString("\n")
 		if len(ce.Config.ProjectTargets) > 0 {
-			for name, t := range ce.Config.ProjectTargets {
-				sb.WriteString(fmt.Sprintf("  Target: %s (%s)\n", name, t.Role))
+			targetNames := make([]string, 0, len(ce.Config.ProjectTargets))
+			for name := range ce.Config.ProjectTargets {
+				targetNames = append(targetNames, name)
+			}
+			sort.Strings(targetNames)
+			for _, name := range targetNames {
+				t := ce.Config.ProjectTargets[name]
+				if t.Role != "" {
+					sb.WriteString(fmt.Sprintf("  Target: %s (%s)\n", name, t.Role))
+				} else {
+					sb.WriteString(fmt.Sprintf("  Target: %s\n", name))
+				}
 			}
 		}
 		if ce.Narrative != nil {
@@ -709,8 +719,36 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 			result := ce.Tools.ExecuteTool(ctx, tc.Name, tc.Input)
 			results = append(results, result)
 			status := "ok"
-			if strings.HasPrefix(result, "Error") || strings.Contains(result, `"error"`) {
+			// Prefer structured detection when result is JSON; fall back to prefix check for plain-text errors.
+			if strings.HasPrefix(result, "Error") {
 				status = "error"
+			} else {
+				var payload map[string]any
+				if err := json.Unmarshal([]byte(result), &payload); err == nil {
+					// Check for a top-level "error" field.
+					if v, ok := payload["error"]; ok && v != nil {
+						switch tv := v.(type) {
+						case string:
+							if tv != "" {
+								status = "error"
+							}
+						default:
+							status = "error"
+						}
+					}
+					// Check for success:false.
+					if v, ok := payload["success"]; ok && status != "error" {
+						if b, okBool := v.(bool); okBool && !b {
+							status = "error"
+						}
+					}
+					// Check for is_error:true.
+					if v, ok := payload["is_error"]; ok && status != "error" {
+						if b, okBool := v.(bool); okBool && b {
+							status = "error"
+						}
+					}
+				}
 			}
 
 			// Track consecutive claude_code failures
@@ -928,7 +966,37 @@ func (ce *ChatEngine) runToolLoopSync(ctx context.Context, model, system string,
 
 			// Track consecutive claude_code failures
 			if tc.Name == "claude_code" {
-				if strings.HasPrefix(result, "Error") || strings.Contains(result, `"error"`) {
+				isFailure := strings.HasPrefix(result, "Error")
+				if !isFailure {
+					var payload map[string]any
+					if err := json.Unmarshal([]byte(result), &payload); err == nil {
+						if v, ok := payload["error"]; ok && v != nil {
+							switch tv := v.(type) {
+							case string:
+								if tv != "" {
+									isFailure = true
+								}
+							default:
+								isFailure = true
+							}
+						}
+						if !isFailure {
+							if v, ok := payload["success"]; ok {
+								if b, okBool := v.(bool); okBool && !b {
+									isFailure = true
+								}
+							}
+						}
+						if !isFailure {
+							if v, ok := payload["is_error"]; ok {
+								if b, okBool := v.(bool); okBool && b {
+									isFailure = true
+								}
+							}
+						}
+					}
+				}
+				if isFailure {
 					consecutiveClaudeCodeFailures++
 				} else {
 					consecutiveClaudeCodeFailures = 0
