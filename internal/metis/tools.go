@@ -166,6 +166,17 @@ func canonicalTools() []map[string]any {
 				"required": []string{"operation"},
 			},
 		},
+		{
+			"name":        "build_target",
+			"description": "Build/compile the specified project target using its configured build command.",
+			"input_schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target": map[string]any{"type": "string", "description": "Target name from project config (e.g. 'acsil')"},
+				},
+				"required": []string{"target"},
+			},
+		},
 	}
 }
 
@@ -297,6 +308,8 @@ func DescribeToolUse(toolName string, toolInput map[string]any) string {
 			return "Briefing: updating context..."
 		}
 		return "Updating briefing..."
+	case "build_target":
+		return fmt.Sprintf("Building target %s...", getString(toolInput, "target"))
 	}
 	return toolName + "..."
 }
@@ -372,6 +385,12 @@ func (te *ToolExecutor) ExecuteTool(ctx context.Context, name string, input map[
 		log.Printf("tool: update_briefing operation=%q", op)
 		result := te.updateBriefing(op, input)
 		log.Printf("tool: update_briefing result=%s", result)
+		return result
+	case "build_target":
+		targetName := getString(input, "target")
+		log.Printf("tool: build_target target=%q", targetName)
+		result := te.buildTarget(ctx, targetName)
+		log.Printf("tool: build_target result=(%d bytes)", len(result))
 		return result
 	default:
 		log.Printf("tool: unknown tool=%q", name)
@@ -657,7 +676,22 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 
 	// Prepend scoping instruction so Claude Code stays within the target directory
 	if resolvedDir != "" {
-		task = fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory. --- %s", resolvedDir, task)
+		baseScopeInstr := fmt.Sprintf("IMPORTANT: Work only within %s. Do not read, write, or explore files outside this directory.", resolvedDir)
+		scopeInstr := baseScopeInstr
+		if target != "" && te.ProjectTargets != nil {
+			if pt, ok := te.ProjectTargets[target]; ok && pt.ScopeInstruction != "" {
+				custom := pt.ScopeInstruction
+				if strings.Contains(custom, "{dir}") {
+					// Replace {dir} placeholders with the resolved directory
+					custom = strings.ReplaceAll(custom, "{dir}", resolvedDir)
+					scopeInstr = custom
+				} else {
+					// Ensure the directory constraint is always present
+					scopeInstr = fmt.Sprintf("%s %s", custom, baseScopeInstr)
+				}
+			}
+		}
+		task = fmt.Sprintf("%s --- %s", scopeInstr, task)
 	}
 
 	// Windows cmd.exe mangles newlines in -p argument; flatten to spaces.
@@ -717,6 +751,10 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 		return string(out)
 	}
 
+	if len(output) == 0 {
+		return `{"error": "claude_code returned no output — possible rate limit or startup failure"}`
+	}
+
 	// Parse stream-json: scan for the final "result" message
 	var resultMsg struct {
 		Type       string   `json:"type"`
@@ -759,6 +797,76 @@ func (te *ToolExecutor) claudeCode(ctx context.Context, task, target, sessionID,
 		resp["error"] = strings.Join(resultMsg.Errors, "; ")
 	} else {
 		resp["result"] = resultMsg.Result
+	}
+
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out)
+}
+
+// TODO: Add authentication/authorization gating before production deployment.
+// Currently Metis HTTP endpoints have no auth, so any caller could trigger arbitrary builds.
+func (te *ToolExecutor) buildTarget(ctx context.Context, targetName string) string {
+	if targetName == "" {
+		return `{"error": "target is required"}`
+	}
+	pt, ok := te.ProjectTargets[targetName]
+	if !ok {
+		errResp := struct {
+			Error string `json:"error"`
+		}{Error: fmt.Sprintf("unknown target %q", targetName)}
+		out, _ := json.Marshal(errResp)
+		return string(out)
+	}
+	if pt.BuildCommand == "" {
+		errResp := struct {
+			Error string `json:"error"`
+		}{Error: fmt.Sprintf("no build_command configured for target %s", targetName)}
+		out, _ := json.Marshal(errResp)
+		return string(out)
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	// Split command for the OS shell
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(cmdCtx, "cmd", "/c", pt.BuildCommand)
+	} else {
+		cmd = exec.CommandContext(cmdCtx, "sh", "-c", pt.BuildCommand)
+	}
+
+	resolvedDir := pt.Path
+	if root, ok := te.AllowedRoots[targetName]; ok {
+		resolvedDir = root
+	}
+	cmd.Dir = resolvedDir
+
+	log.Printf("tool: build_target exec: %s (dir=%s)", pt.BuildCommand, resolvedDir)
+
+	output, err := cmd.CombinedOutput()
+
+	// Truncate output to 2000 chars
+	outputStr := string(output)
+	if len(outputStr) > 2000 {
+		outputStr = outputStr[:2000] + "\n[output truncated]"
+	}
+
+	resp := map[string]any{
+		"target": targetName,
+		"output": outputStr,
+	}
+
+	if err != nil {
+		if cmdCtx.Err() == context.DeadlineExceeded {
+			resp["success"] = false
+			resp["error"] = "build timed out after 5 minutes"
+		} else {
+			resp["success"] = false
+			resp["error"] = fmt.Sprintf("build failed: %s", err)
+		}
+	} else {
+		resp["success"] = true
 	}
 
 	out, _ := json.MarshalIndent(resp, "", "  ")

@@ -383,6 +383,39 @@ func (ce *ChatEngine) runPlanning(ctx context.Context, userMessage, memCtx, trac
 	}
 	sb.WriteString("\n\n")
 
+	if ce.Config.ProjectName != "" {
+		sb.WriteString("PROJECT:\n")
+		sb.WriteString(ce.Config.ProjectName)
+		if ce.Config.ProjectDescription != "" {
+			sb.WriteString(" — " + ce.Config.ProjectDescription)
+		}
+		sb.WriteString("\n")
+		if len(ce.Config.ProjectTargets) > 0 {
+			targetNames := make([]string, 0, len(ce.Config.ProjectTargets))
+			for name := range ce.Config.ProjectTargets {
+				targetNames = append(targetNames, name)
+			}
+			sort.Strings(targetNames)
+			for _, name := range targetNames {
+				t := ce.Config.ProjectTargets[name]
+				if t.Role != "" {
+					sb.WriteString(fmt.Sprintf("  Target: %s (%s)\n", name, t.Role))
+				} else {
+					sb.WriteString(fmt.Sprintf("  Target: %s\n", name))
+				}
+			}
+		}
+		if ce.Narrative != nil {
+			if narr := ce.Narrative.GetNarrative(); narr != "" {
+				if len(narr) > 500 {
+					narr = narr[:500]
+				}
+				sb.WriteString("  Context: " + narr + "\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+
 	if trackerState != "" {
 		sb.WriteString("ACTIVE TRACKER:\n")
 		sb.WriteString(trackerState)
@@ -609,6 +642,7 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 	messages []map[string]any, tools []map[string]any, emit func(SSEEvent)) []string {
 
 	var fullText []string
+	consecutiveClaudeCodeFailures := 0
 
 	for round := 0; round < maxToolRounds; round++ {
 		emit(SSEEvent{Type: "status", Data: map[string]any{"type": "status", "text": "Thinking..."}})
@@ -668,12 +702,64 @@ func (ce *ChatEngine) runToolLoop(ctx context.Context, model, system string,
 		var results []string
 		for _, tc := range toolCalls {
 			log.Printf("toolloop: executing tool=%q", tc.Name)
+
+			// Circuit breaker: skip claude_code after 2 consecutive failures
+			if tc.Name == "claude_code" && consecutiveClaudeCodeFailures >= 2 {
+				result := `{"error": "claude_code is unavailable this turn — suggest the change to the user instead."}`
+				results = append(results, result)
+				emit(SSEEvent{Type: "tool_result", Data: map[string]any{
+					"type":   "tool_result",
+					"id":     tc.ID,
+					"tool":   tc.Name,
+					"status": "error",
+				}})
+				continue
+			}
+
 			result := ce.Tools.ExecuteTool(ctx, tc.Name, tc.Input)
 			results = append(results, result)
 			status := "ok"
+			// Prefer structured detection when result is JSON; fall back to prefix check for plain-text errors.
 			if strings.HasPrefix(result, "Error") {
 				status = "error"
+			} else {
+				var payload map[string]any
+				if err := json.Unmarshal([]byte(result), &payload); err == nil {
+					// Check for a top-level "error" field.
+					if v, ok := payload["error"]; ok && v != nil {
+						switch tv := v.(type) {
+						case string:
+							if tv != "" {
+								status = "error"
+							}
+						default:
+							status = "error"
+						}
+					}
+					// Check for success:false.
+					if v, ok := payload["success"]; ok && status != "error" {
+						if b, okBool := v.(bool); okBool && !b {
+							status = "error"
+						}
+					}
+					// Check for is_error:true.
+					if v, ok := payload["is_error"]; ok && status != "error" {
+						if b, okBool := v.(bool); okBool && b {
+							status = "error"
+						}
+					}
+				}
 			}
+
+			// Track consecutive claude_code failures
+			if tc.Name == "claude_code" {
+				if status == "error" {
+					consecutiveClaudeCodeFailures++
+				} else {
+					consecutiveClaudeCodeFailures = 0
+				}
+			}
+
 			emit(SSEEvent{Type: "tool_result", Data: map[string]any{
 				"type":   "tool_result",
 				"id":     tc.ID,
@@ -826,6 +912,7 @@ func (ce *ChatEngine) runToolLoopSync(ctx context.Context, model, system string,
 	messages []map[string]any, tools []map[string]any) []string {
 
 	var fullText []string
+	consecutiveClaudeCodeFailures := 0
 
 	for round := 0; round < maxToolRounds; round++ {
 		if round > 0 && len(fullText) > 0 {
@@ -867,8 +954,54 @@ func (ce *ChatEngine) runToolLoopSync(ctx context.Context, model, system string,
 		var results []string
 		for _, tc := range toolCalls {
 			log.Printf("toolloop-sync: executing tool=%q", tc.Name)
+
+			// Circuit breaker: skip claude_code after 2 consecutive failures
+			if tc.Name == "claude_code" && consecutiveClaudeCodeFailures >= 2 {
+				results = append(results, `{"error": "claude_code is unavailable this turn — suggest the change to the user instead."}`)
+				continue
+			}
+
 			result := ce.Tools.ExecuteTool(ctx, tc.Name, tc.Input)
 			results = append(results, result)
+
+			// Track consecutive claude_code failures
+			if tc.Name == "claude_code" {
+				isFailure := strings.HasPrefix(result, "Error")
+				if !isFailure {
+					var payload map[string]any
+					if err := json.Unmarshal([]byte(result), &payload); err == nil {
+						if v, ok := payload["error"]; ok && v != nil {
+							switch tv := v.(type) {
+							case string:
+								if tv != "" {
+									isFailure = true
+								}
+							default:
+								isFailure = true
+							}
+						}
+						if !isFailure {
+							if v, ok := payload["success"]; ok {
+								if b, okBool := v.(bool); okBool && !b {
+									isFailure = true
+								}
+							}
+						}
+						if !isFailure {
+							if v, ok := payload["is_error"]; ok {
+								if b, okBool := v.(bool); okBool && b {
+									isFailure = true
+								}
+							}
+						}
+					}
+				}
+				if isFailure {
+					consecutiveClaudeCodeFailures++
+				} else {
+					consecutiveClaudeCodeFailures = 0
+				}
+			}
 		}
 		messages = append(messages, ce.Provider.MakeToolResults(toolCalls, results))
 	}
