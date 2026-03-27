@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eikos-io/krisis/internal/config"
 	"github.com/eikos-io/krisis/internal/mimne"
@@ -436,8 +437,8 @@ func (ce *ChatEngine) runPlanning(ctx context.Context, userMessage, memCtx, trac
 			if content == "" {
 				continue
 			}
-			if len(content) > 300 {
-				content = content[:300] + "..."
+			if len(content) > 1000 {
+				content = truncateBytes(content, 1000) + "..."
 			}
 			sb.WriteString(fmt.Sprintf("[%s]: %s\n", role, content))
 		}
@@ -596,8 +597,8 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	// 9. Persist response
 	if responseText != "" {
 		summary := responseText
-		if len(summary) > 500 {
-			summary = summary[:500]
+		if len(summary) > 10000 {
+			summary = truncateBytes(summary, 10000)
 		}
 		ce.Memory.LogResponse(ctx, summary)
 	}
@@ -883,8 +884,8 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 
 	if responseText != "" {
 		summary := responseText
-		if len(summary) > 500 {
-			summary = summary[:500]
+		if len(summary) > 10000 {
+			summary = truncateBytes(summary, 10000)
 		}
 		ce.Memory.LogResponse(ctx, summary)
 	}
@@ -1031,4 +1032,16 @@ func (ce *ChatEngine) HydrateHistory(ctx context.Context) {
 func FormatSSEData(data map[string]any) string {
 	b, _ := json.Marshal(data)
 	return "data: " + string(b) + "\n\n"
+}
+
+// truncateBytes returns s trimmed to at most n bytes, cutting at a rune
+// boundary so multi-byte UTF-8 characters are never split.
+func truncateBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -359,10 +360,15 @@ func (m *Mimne) checkPriorDiscussionTrackerResolution(ctx context.Context, track
 	}
 }
 
-// truncate returns the first n characters of s, appending "..." if truncated.
+// truncate returns the first n bytes of s (cut at a rune boundary),
+// appending "..." if truncated.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Walk back to avoid splitting a multi-byte UTF-8 character.
+	for n > 0 && n < len(s) && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "..."
 }
