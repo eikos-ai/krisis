@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -135,14 +136,14 @@ func (s *Session) createChunk(ctx context.Context, convID string) error {
 	var combined strings.Builder
 	for _, t := range window {
 		text := t.Text
-		if len(text) > 500 {
-			text = text[:500]
+		if len(text) > 2000 {
+			text = truncateBytes(text, 2000)
 		}
 		fmt.Fprintf(&combined, "[%s]: %s\n", t.Role, text)
 	}
 	combinedStr := combined.String()
-	if len(combinedStr) > 4000 {
-		combinedStr = combinedStr[:4000]
+	if len(combinedStr) > 6000 {
+		combinedStr = truncateBytes(combinedStr, 6000)
 	}
 
 	firstIdx := s.turnIndex - len(window)
@@ -151,8 +152,8 @@ func (s *Session) createChunk(ctx context.Context, convID string) error {
 	vecStr := formatVector(vec)
 
 	preview := combinedStr
-	if len(preview) > 1500 {
-		preview = preview[:1500]
+	if len(preview) > 6000 {
+		preview = preview[:6000]
 	}
 
 	content, _ := json.Marshal(map[string]any{
@@ -357,4 +358,16 @@ func formatVector(vec []float32) string {
 		parts[i] = fmt.Sprintf("%f", v)
 	}
 	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// truncateBytes returns s trimmed to at most n bytes, cutting at a rune
+// boundary so multi-byte UTF-8 characters are never split.
+func truncateBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
