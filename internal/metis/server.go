@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net/http"
@@ -19,23 +20,31 @@ import (
 
 // Server is the HTTP server for the Metis conversation interface.
 type Server struct {
-	Engine    *ChatEngine
-	Pool      *pgxpool.Pool
-	Memory    *mimne.Mimne
-	StaticFS  embed.FS
-	PanelsDir string
-	mux       *http.ServeMux
+	Engine      *ChatEngine
+	Pool        *pgxpool.Pool
+	Memory      *mimne.Mimne
+	StaticFS    embed.FS
+	PanelsDir   string
+	DisplayName string
+	cachedIndex []byte
+	mux         *http.ServeMux
 }
 
 // NewServer creates a new Metis HTTP server.
-func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticFS embed.FS, panelsDir string) *Server {
+func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticFS embed.FS, panelsDir, displayName string) *Server {
 	s := &Server{
-		Engine:    engine,
-		Pool:      pool,
-		Memory:    memory,
-		StaticFS:  staticFS,
-		PanelsDir: panelsDir,
-		mux:       http.NewServeMux(),
+		Engine:      engine,
+		Pool:        pool,
+		Memory:      memory,
+		StaticFS:    staticFS,
+		PanelsDir:   panelsDir,
+		DisplayName: displayName,
+		mux:         http.NewServeMux(),
+	}
+	// Pre-render index.html with the escaped display name once at startup.
+	if data, err := staticFS.ReadFile("static/index.html"); err == nil {
+		rendered := strings.Replace(string(data), "{{DISPLAY_NAME}}", html.EscapeString(displayName), -1)
+		s.cachedIndex = []byte(rendered)
 	}
 	s.registerRoutes()
 	return s
@@ -76,13 +85,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := s.StaticFS.ReadFile("static/index.html")
-	if err != nil {
+	if s.cachedIndex == nil {
 		http.Error(w, "index.html not found", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
+	w.Write(s.cachedIndex)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

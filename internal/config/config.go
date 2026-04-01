@@ -44,6 +44,7 @@ type Config struct {
 	ProjectFile        string
 	ProjectName        string
 	ProjectDescription string
+	DisplayName        string // UI display name; defaults to "Metis"
 	ProjectTargets     map[string]ProjectTarget
 	PanelsDir          string
 
@@ -101,6 +102,7 @@ func Load() *Config {
 	}
 
 	// Load project config file
+	c.DisplayName = "Metis" // default; overridden by project file display_name
 	if c.ProjectFile != "" {
 		c.loadProjectFile()
 	}
@@ -171,6 +173,7 @@ func (c *Config) loadProjectFile() {
 	var proj struct {
 		Name           string                     `json:"name"`
 		Description    string                     `json:"description"`
+		DisplayName    string                     `json:"display_name"`
 		NarrativeFile  string                     `json:"narrative_file"`
 		AttachmentsDir string                     `json:"attachments_dir"`
 		Paths          map[string]json.RawMessage `json:"paths"`
@@ -182,6 +185,11 @@ func (c *Config) loadProjectFile() {
 	}
 	c.ProjectName = proj.Name
 	c.ProjectDescription = proj.Description
+	if proj.DisplayName != "" {
+		c.DisplayName = proj.DisplayName
+	} else {
+		c.DisplayName = "Metis"
+	}
 	if proj.NarrativeFile != "" {
 		c.NarrativeFile = expandTilde(proj.NarrativeFile)
 		narData, narErr := os.ReadFile(c.NarrativeFile)
