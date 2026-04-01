@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net/http"
@@ -25,6 +26,7 @@ type Server struct {
 	StaticFS    embed.FS
 	PanelsDir   string
 	DisplayName string
+	cachedIndex []byte
 	mux         *http.ServeMux
 }
 
@@ -38,6 +40,11 @@ func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, stat
 		PanelsDir:   panelsDir,
 		DisplayName: displayName,
 		mux:         http.NewServeMux(),
+	}
+	// Pre-render index.html with the escaped display name once at startup.
+	if data, err := staticFS.ReadFile("static/index.html"); err == nil {
+		rendered := strings.Replace(string(data), "{{DISPLAY_NAME}}", html.EscapeString(displayName), -1)
+		s.cachedIndex = []byte(rendered)
 	}
 	s.registerRoutes()
 	return s
@@ -78,15 +85,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := s.StaticFS.ReadFile("static/index.html")
-	if err != nil {
+	if s.cachedIndex == nil {
 		http.Error(w, "index.html not found", http.StatusNotFound)
 		return
 	}
-	// Inject configurable display name into the HTML.
-	html := strings.Replace(string(data), "{{DISPLAY_NAME}}", s.DisplayName, -1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(html))
+	w.Write(s.cachedIndex)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
