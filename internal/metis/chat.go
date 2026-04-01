@@ -233,7 +233,7 @@ func stripConfidence(text string) string {
 	return strings.TrimSpace(confidenceStripRe.ReplaceAllString(text, ""))
 }
 
-func buildSystemPrompt(ctx, projectName, projectDesc, projectNarrative string, targets map[string]config.ProjectTarget) string {
+func buildSystemPrompt(ctx, projectName, projectDesc, projectNarrative, displayName string, targets map[string]config.ProjectTarget) string {
 	today := time.Now().Format("Monday, January 02, 2006")
 	s := strings.Replace(systemPrompt, "{today}", today, 1)
 
@@ -258,7 +258,7 @@ func buildSystemPrompt(ctx, projectName, projectDesc, projectNarrative string, t
 	// Build operational self-model
 	var sm strings.Builder
 	sm.WriteString("\nOperational self-model:\n")
-	sm.WriteString("You are Metis, the conversational interface for this project.\n\n")
+	sm.WriteString("You are " + displayName + ", the conversational interface for this project.\n\n")
 
 	// Tool inventory from canonicalTools
 	sm.WriteString("Tools available:\n")
@@ -506,7 +506,7 @@ func (ce *ChatEngine) ChatStreaming(ctx context.Context, userMessage string, con
 	if ce.Narrative != nil {
 		narrative = ce.Narrative.GetNarrative()
 	}
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, narrative, ce.Config.ProjectTargets)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, narrative, ce.Config.DisplayName, ce.Config.ProjectTargets)
 	if planningTrace != "" {
 		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
 	}
@@ -818,7 +818,7 @@ func (ce *ChatEngine) ChatNonStreaming(ctx context.Context, userMessage string, 
 	if ce.Narrative != nil {
 		narrative = ce.Narrative.GetNarrative()
 	}
-	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, narrative, ce.Config.ProjectTargets)
+	system := buildSystemPrompt(memCtx, ce.Config.ProjectName, ce.Config.ProjectDescription, narrative, ce.Config.DisplayName, ce.Config.ProjectTargets)
 	if planningTrace != "" {
 		system += "\n\nPLANNING TRACE (reasoning for this turn):\n" + planningTrace
 	}

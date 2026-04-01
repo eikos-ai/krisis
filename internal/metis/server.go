@@ -19,23 +19,25 @@ import (
 
 // Server is the HTTP server for the Metis conversation interface.
 type Server struct {
-	Engine    *ChatEngine
-	Pool      *pgxpool.Pool
-	Memory    *mimne.Mimne
-	StaticFS  embed.FS
-	PanelsDir string
-	mux       *http.ServeMux
+	Engine      *ChatEngine
+	Pool        *pgxpool.Pool
+	Memory      *mimne.Mimne
+	StaticFS    embed.FS
+	PanelsDir   string
+	DisplayName string
+	mux         *http.ServeMux
 }
 
 // NewServer creates a new Metis HTTP server.
-func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticFS embed.FS, panelsDir string) *Server {
+func NewServer(engine *ChatEngine, pool *pgxpool.Pool, memory *mimne.Mimne, staticFS embed.FS, panelsDir, displayName string) *Server {
 	s := &Server{
-		Engine:    engine,
-		Pool:      pool,
-		Memory:    memory,
-		StaticFS:  staticFS,
-		PanelsDir: panelsDir,
-		mux:       http.NewServeMux(),
+		Engine:      engine,
+		Pool:        pool,
+		Memory:      memory,
+		StaticFS:    staticFS,
+		PanelsDir:   panelsDir,
+		DisplayName: displayName,
+		mux:         http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -81,8 +83,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "index.html not found", http.StatusNotFound)
 		return
 	}
+	// Inject configurable display name into the HTML.
+	html := strings.Replace(string(data), "{{DISPLAY_NAME}}", s.DisplayName, -1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
+	w.Write([]byte(html))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

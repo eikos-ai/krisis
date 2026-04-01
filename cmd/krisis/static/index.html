@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Metis</title>
+    <title>{{DISPLAY_NAME}}</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {
@@ -37,6 +37,7 @@
         }
 
         #header .title {
+            font-size: 16px;
             font-weight: 600;
             color: #4a5568;
             letter-spacing: 0.5px;
@@ -560,7 +561,7 @@
     <div id="header">
         <div style="display: flex; align-items: center;">
             <button id="history-toggle">History</button>
-            <span class="title">METIS</span>
+            <span class="title">{{DISPLAY_NAME}}</span>
         </div>
         <span id="timing"></span>
     </div>
@@ -576,7 +577,7 @@
         </div>
 
         <div id="response">
-            <div class="label">Metis</div>
+            <div class="label">{{DISPLAY_NAME}}</div>
             <div id="activity-log"></div>
             <div class="content" id="response-text"></div>
         </div>
