@@ -9,7 +9,13 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
+
+// llmHTTPClient is used for all Anthropic Messages API calls from this package.
+// The 30s timeout prevents StoreLearning (and other per-turn callers) from
+// hanging indefinitely when the incoming context has no deadline.
+var llmHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // llmComplete makes a non-streaming Anthropic Messages API call and returns
 // the first text content block. Used by the tracker subsystem for scratchpad
@@ -41,7 +47,7 @@ func llmComplete(ctx context.Context, model, system, userContent string, maxToke
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := llmHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("send request: %w", err)
 	}

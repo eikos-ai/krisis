@@ -401,47 +401,23 @@ func (m *Mimne) StoreLearning(ctx context.Context, text, source, domain, correct
 		}
 	}
 
-	// Detect and commit delta triplets (automatic supersession detection).
-	// Requires a known event node; skip silently if the buffer has no persisted turns.
-	candidates, detErr := m.DetectDeltaTriplets(ctx, newID, 5)
-	if detErr != nil {
-		fmt.Fprintf(os.Stderr, "mimne: DetectDeltaTriplets error for learning %s: %v\n", newID, detErr)
-	} else if len(candidates) > 0 && eventID != "" {
-		for _, candidate := range candidates {
-			fmt.Fprintf(os.Stderr, "mimne: attempting delta-triplet: prior=%s new=%s similarity=%.4f correctionSignal=%v\n",
-				candidate.PriorID, newID, candidate.Similarity, candidate.HasCorrectionSignal)
-			_, err := m.CreateDeltaTriplet(ctx, candidate.PriorID, newID, eventID)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "mimne: CreateDeltaTriplet failed for prior=%s new=%s: %v\n",
-					candidate.PriorID, newID, err)
-			}
-		}
-	} else if len(candidates) > 0 {
-		fmt.Fprintf(os.Stderr, "mimne: delta-triplet candidates found but no event ID in buffer (candidates=%d)\n", len(candidates))
-	}
-
-	// LLM-mediated truth verification: check candidates with similarity > 0.5
-	// that weren't already caught by the embedding-threshold supersession above.
-	// The LLM can detect semantic contradictions that embedding distance misses.
-	alreadySuperseded := make(map[string]bool)
-	if detErr == nil {
-		for _, c := range candidates {
-			alreadySuperseded[c.PriorID] = true
-		}
-	}
+	// LLM-mediated truth verification: the only supersession path.
+	// Embedding distance alone cannot distinguish "contradicts" from "cites as
+	// evidence" or "same topic, different facet." All supersession decisions are
+	// delegated to the LLM truth-verify pass, which evaluates the retrieved
+	// top candidates whose similarity exceeds truthVerifyThreshold.
+	alreadySuperseded := map[string]bool{}
 	llmSuperseded, tvErr := m.TruthVerifySupersession(ctx, newID, text, alreadySuperseded)
 	if tvErr != nil {
 		fmt.Fprintf(os.Stderr, "mimne: truth-verify error for learning %s: %v\n", newID, tvErr)
-	} else if len(llmSuperseded) > 0 && eventID != "" {
+	} else {
 		for _, priorID := range llmSuperseded {
-			fmt.Fprintf(os.Stderr, "mimne: truth-verify committing supersession: prior=%s new=%s\n", priorID, newID)
+			fmt.Fprintf(os.Stderr, "mimne: truth-verify committing supersession: prior=%s new=%s event=%q\n", priorID, newID, eventID)
 			_, err := m.CreateDeltaTriplet(ctx, priorID, newID, eventID)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "mimne: truth-verify CreateDeltaTriplet failed for prior=%s: %v\n", priorID, err)
 			}
 		}
-	} else if len(llmSuperseded) > 0 {
-		fmt.Fprintf(os.Stderr, "mimne: truth-verify found supersessions but no event ID in buffer (superseded=%d)\n", len(llmSuperseded))
 	}
 
 	result, _ := json.Marshal(map[string]any{

@@ -11,15 +11,16 @@ import (
 // TestTaskTrackerCreateAndQuery creates a task_tracker node, verifies it's
 // queryable via FindActiveTaskTrackers, and cleans up after itself.
 func TestTaskTrackerCreateAndQuery(t *testing.T) {
+	dbURL := skipIfNoTestDB(t)
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, testDBURL())
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Skipf("cannot connect to mimne_v2: %v", err)
+		t.Skipf("cannot connect to configured test database: %v", err)
 	}
 	defer pool.Close()
 	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("cannot ping mimne_v2: %v", err)
+		t.Skipf("cannot ping configured test database: %v", err)
 	}
 
 	m := New(pool, modelDir())
@@ -126,15 +127,16 @@ func TestTaskTrackerCreateAndQuery(t *testing.T) {
 // TestTaskTrackerResolve creates a task_tracker, resolves it, and verifies
 // the resulting learning node and derived_from edge.
 func TestTaskTrackerResolve(t *testing.T) {
+	dbURL := skipIfNoTestDB(t)
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, testDBURL())
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Skipf("cannot connect to mimne_v2: %v", err)
+		t.Skipf("cannot connect to configured test database: %v", err)
 	}
 	defer pool.Close()
 	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("cannot ping mimne_v2: %v", err)
+		t.Skipf("cannot ping configured test database: %v", err)
 	}
 
 	m := New(pool, modelDir())
