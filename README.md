@@ -311,6 +311,37 @@ The web UI is embedded in the binary via Go's `static/` directory — no separat
 
 ---
 
+## Testing
+
+Mimne's test suite includes DB-touching integration tests. These tests call `StoreLearning`, which runs the LLM-mediated truth-verify pass and may supersede existing learnings in the database. To prevent accidental damage to your main Mimne database, the tests require `MIMNE_DB_URL` to be set explicitly to an isolated test database. If `MIMNE_DB_URL` is unset, those tests skip cleanly.
+
+### One-time setup
+
+Create a separate test database with the same schema:
+
+```sh
+createdb mimne_test
+psql -d mimne_test -f schema.sql
+```
+
+`schema.sql` includes the pgvector extension, so the test database needs pgvector installed the same way as your main database (see [Requirements](#all-platforms)).
+
+### Running the tests
+
+Set `MIMNE_DB_URL` to the test database and run the mimne package tests. The truth-verify tests also require `ANTHROPIC_API_KEY` since they exercise the LLM judgment path:
+
+```sh
+export MIMNE_DB_URL='postgres://postgres:yourpassword@localhost:5432/mimne_test?sslmode=disable'
+export ANTHROPIC_API_KEY=sk-ant-...
+go test ./internal/mimne/... -v
+```
+
+Without `MIMNE_DB_URL`, DB-touching tests skip with a message indicating the env var is required. Tests that don't touch the database (e.g. `TestDetectDeltaTriplets_CorrectionSignal`, `TestDeltaTripletJSON`, `TestDeltaCandidatesJSON`) run regardless.
+
+Never point `MIMNE_DB_URL` at your main Mimne database when running tests. The suite cleans up its own fixture data by domain tag (`integration-test`, `tv-citation-test`, `tv-contradiction-test`), but `StoreLearning` may also trigger supersessions on pre-existing learnings in whatever database it's connected to.
+
+---
+
 ## Troubleshooting
 
 ### No binary produced after `go build`

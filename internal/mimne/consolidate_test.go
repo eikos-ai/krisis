@@ -9,11 +9,24 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testDBURL returns the isolated test DB URL from MIMNE_DB_URL, or an empty
+// string if unset. DB-touching tests must skip when this is empty — silent
+// fallback to a production DB risks destructive supersession writes against
+// real learnings.
 func testDBURL() string {
-	if u := os.Getenv("MIMNE_DB_URL"); u != "" {
-		return u
+	return os.Getenv("MIMNE_DB_URL")
+}
+
+// skipIfNoTestDB returns the configured test DB URL, skipping the test with an
+// explanatory message if MIMNE_DB_URL is unset. Every DB-touching test must
+// call this before opening a pool.
+func skipIfNoTestDB(t *testing.T) string {
+	t.Helper()
+	u := testDBURL()
+	if u == "" {
+		t.Skip("MIMNE_DB_URL not set — skipping destructive DB test; set it to an isolated test database URL")
 	}
-	return "postgres://postgres:dbpassword@localhost:5432/mimne_v2?sslmode=disable"
+	return u
 }
 
 // TestSupersession_EndToEnd is an end-to-end integration test that exercises
@@ -28,17 +41,18 @@ func TestSupersession_EndToEnd(t *testing.T) {
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("ANTHROPIC_API_KEY not set — supersession end-to-end test requires LLM")
 	}
+	dbURL := skipIfNoTestDB(t)
 	ctx := context.Background()
 
 	// --- Connect to DB ---
-	pool, err := pgxpool.New(ctx, testDBURL())
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Skipf("cannot connect to mimne_v2: %v", err)
+		t.Skipf("cannot connect to configured test database: %v", err)
 	}
 	defer pool.Close()
 
 	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("cannot ping mimne_v2: %v", err)
+		t.Skipf("cannot ping configured test database: %v", err)
 	}
 
 	// --- Clean up stale integration-test learnings from previous runs ---
@@ -103,9 +117,9 @@ func TestSupersession_EndToEnd(t *testing.T) {
 	cleanupIDs = append(cleanupIDs, learningAID)
 
 	// --- Diagnostic: pgvector distance from learningA to learningB's stored embedding ---
-	// Captured BEFORE storing B so we can surface the raw similarity signal even
-	// if the LLM call later fails; useful when tests fail unexpectedly.
-	// (Delayed until after B is stored below — embedding lookup needs B in DB.)
+	// Computed AFTER storing B because the embedding lookup below requires B to
+	// exist in the DB. This still surfaces the raw similarity signal to help
+	// diagnose unexpected test failures, including later LLM-related failures.
 
 	learningBID := storeLearning(newText, "B (new)")
 	cleanupIDs = append(cleanupIDs, learningBID)
@@ -379,15 +393,16 @@ func TestTruthVerify_CitationIsNotContradiction(t *testing.T) {
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("ANTHROPIC_API_KEY not set — truth-verify tests require LLM")
 	}
+	dbURL := skipIfNoTestDB(t)
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, testDBURL())
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Skipf("cannot connect to mimne_v2: %v", err)
+		t.Skipf("cannot connect to configured test database: %v", err)
 	}
 	defer pool.Close()
 	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("cannot ping mimne_v2: %v", err)
+		t.Skipf("cannot ping configured test database: %v", err)
 	}
 
 	// Clean up stale test data.
@@ -458,15 +473,16 @@ func TestTruthVerify_GenuineContradictionStillCaught(t *testing.T) {
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("ANTHROPIC_API_KEY not set — truth-verify tests require LLM")
 	}
+	dbURL := skipIfNoTestDB(t)
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, testDBURL())
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Skipf("cannot connect to mimne_v2: %v", err)
+		t.Skipf("cannot connect to configured test database: %v", err)
 	}
 	defer pool.Close()
 	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("cannot ping mimne_v2: %v", err)
+		t.Skipf("cannot ping configured test database: %v", err)
 	}
 
 	// Clean up stale test data.
@@ -535,16 +551,17 @@ func TestTruthVerify_GenuineContradictionStillCaught(t *testing.T) {
 // TestCreateDeltaTriplet_MissingNodes verifies that CreateDeltaTriplet rejects
 // non-existent node IDs without touching a real DB.
 func TestCreateDeltaTriplet_InvalidUUIDs(t *testing.T) {
+	dbURL := skipIfNoTestDB(t)
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, testDBURL())
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Skipf("cannot connect to mimne_v2: %v", err)
+		t.Skipf("cannot connect to configured test database: %v", err)
 	}
 	defer pool.Close()
 
 	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("cannot ping mimne_v2: %v", err)
+		t.Skipf("cannot ping configured test database: %v", err)
 	}
 
 	m := &Mimne{Pool: pool, Embedder: NewEmbedder("/nonexistent")}

@@ -404,8 +404,8 @@ func (m *Mimne) StoreLearning(ctx context.Context, text, source, domain, correct
 	// LLM-mediated truth verification: the only supersession path.
 	// Embedding distance alone cannot distinguish "contradicts" from "cites as
 	// evidence" or "same topic, different facet." All supersession decisions are
-	// delegated to the LLM truth-verify pass, which considers all candidates
-	// with similarity > truthVerifyThreshold.
+	// delegated to the LLM truth-verify pass, which evaluates the retrieved
+	// top candidates whose similarity exceeds truthVerifyThreshold.
 	alreadySuperseded := map[string]bool{}
 	llmSuperseded, tvErr := m.TruthVerifySupersession(ctx, newID, text, alreadySuperseded)
 	if tvErr != nil {
