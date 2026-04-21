@@ -415,7 +415,7 @@ Krisis is early-stage software, open-sourced under the MIT license (March 2026).
 - **Discussion tracker**: LLM-classified design discussions, separate from regex-based task trackers
 - **Write-time truth verification**: LLM contradiction checks on `store_learning`
 
-The memory architecture is described in `docs/memory_architecture_draft_v1.pdf`.
+The memory architecture is described in `docs/memory_architecture_draft_v2.pdf`.
 
 The following areas are incomplete or subject to change:
 
