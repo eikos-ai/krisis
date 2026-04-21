@@ -84,10 +84,13 @@ type SupersededLearning struct {
 	SupersededBy string `json:"superseded_by"`
 }
 
-// DetectDeltaTriplets identifies existing learnings that newLearningID may supersede.
-// It embeds the new learning's text and searches for semantically similar prior
-// learnings (cosine similarity >= supersessionThreshold). Learnings with explicit
-// correction language in their text are included regardless of similarity score.
+// DetectDeltaTriplets is a detection utility that identifies existing learnings
+// semantically similar to newLearningID. It does NOT commit supersessions — it
+// returns candidates for inspection, audit, or manual operations only.
+//
+// StoreLearning no longer calls this function. All automated supersession is
+// handled by TruthVerifySupersession (LLM-mediated), which can distinguish
+// contradiction from citation or shared-topic overlap.
 //
 // Results are candidates only — call CreateDeltaTriplet to commit a supersession.
 // maxCandidates caps the result list (default 5).
@@ -183,29 +186,37 @@ LIMIT $3`,
 	return candidates, nil
 }
 
-// CreateDeltaTriplet commits a confirmed supersession by creating two edges
+// CreateDeltaTriplet commits a confirmed supersession by creating edges
 // and marking the prior learning as deprecated:
 //
 //	New --supersedes-->  Prior  (what was replaced)
-//	New --triggered_by-> Event  (what caused the update)
+//	New --triggered_by-> Event  (what caused the update, if known)
 //	Prior.superseded_by = newID (drops it from retrieval automatically)
 //
 // priorID must be an existing, non-superseded learning node.
 // newID must be an existing learning node.
-// eventID must be an existing node (turn, execution, conversation, etc.).
+// eventID is optional: if empty, the triggered_by edge is skipped (used for
+// programmatic calls outside a conversation buffer). If non-empty, it must
+// reference an existing node (turn, execution, conversation, etc.).
 func (m *Mimne) CreateDeltaTriplet(ctx context.Context, priorID, newID, eventID string) (*DeltaTriplet, error) {
-	// Verify all three nodes exist.
+	// Verify prior and new nodes exist; validate event node only when provided.
+	ids := []string{priorID, newID}
+	expected := 2
+	if eventID != "" {
+		ids = append(ids, eventID)
+		expected = 3
+	}
 	var found int
 	err := m.Pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM nodes WHERE id = ANY($1::uuid[])`,
-		[]string{priorID, newID, eventID},
+		ids,
 	).Scan(&found)
 	if err != nil {
 		return nil, fmt.Errorf("validate node IDs: %w", err)
 	}
-	if found != 3 {
-		return nil, fmt.Errorf("node IDs not all found (%d/3): prior=%s new=%s event=%s",
-			found, priorID, newID, eventID)
+	if found != expected {
+		return nil, fmt.Errorf("node IDs not all found (%d/%d): prior=%s new=%s event=%s",
+			found, expected, priorID, newID, eventID)
 	}
 
 	// newID must be a learning node.
@@ -246,14 +257,16 @@ func (m *Mimne) CreateDeltaTriplet(ctx context.Context, priorID, newID, eventID 
 		return nil, fmt.Errorf("create supersedes edge: %w", err)
 	}
 
-	// Edge 2: New --triggered_by--> Event
-	_, err = m.Pool.Exec(ctx,
-		`INSERT INTO edges (source_id, target_id, edge_type, edge_status, metadata)
-		 VALUES ($1::uuid, $2::uuid, 'triggered_by', 'active', '{}')`,
-		newID, eventID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create triggered_by edge: %w", err)
+	// Edge 2: New --triggered_by--> Event (only if event context is known).
+	if eventID != "" {
+		_, err = m.Pool.Exec(ctx,
+			`INSERT INTO edges (source_id, target_id, edge_type, edge_status, metadata)
+			 VALUES ($1::uuid, $2::uuid, 'triggered_by', 'active', '{}')`,
+			newID, eventID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create triggered_by edge: %w", err)
+		}
 	}
 
 	// Mark the prior learning deprecated so retrieval filters it out automatically.
@@ -307,7 +320,7 @@ ORDER BY created_at DESC`)
 // can detect semantic contradictions that embedding distance misses
 // (e.g., "Python/FastAPI" vs "Go single-binary" are about the same attribute
 // with contradictory values but have low embedding similarity).
-const truthVerifyThreshold = 0.5
+const truthVerifyThreshold = 0.35
 
 const truthVerifySystemPrompt = `You are a knowledge consistency checker. A new learning is being stored in a knowledge base. Determine whether the new learning contradicts or updates any of the existing learnings listed below.
 
@@ -316,6 +329,7 @@ For each existing learning, reply with exactly one line in this format:
 
 YES means the new learning contradicts, corrects, or replaces the existing one — they describe the same attribute, fact, or decision but with a different or updated value.
 NO means they are compatible, complementary, or about different things.
+NO also applies when the new learning references, cites, quotes, or builds upon the existing one as supporting evidence, or describes a different facet of the same topic. Two learnings can share distinctive vocabulary, numeric facts, or domain terminology because one depends on or complements the other — that is not contradiction. YES requires that the new learning asserts a different value for the same attribute, fact, or decision the existing one asserts.
 
 Be precise: two learnings about the same project but different attributes are NOT contradictions.`
 

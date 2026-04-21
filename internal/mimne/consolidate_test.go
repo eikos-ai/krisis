@@ -16,13 +16,18 @@ func testDBURL() string {
 	return "postgres://postgres:dbpassword@localhost:5432/mimne_v2?sslmode=disable"
 }
 
-// TestDeltaTripletConsolidation is an end-to-end integration test that exercises
-// delta-triplet creation against the live mimne_v2 database.
+// TestSupersession_EndToEnd is an end-to-end integration test that exercises
+// contradiction supersession through StoreLearning's auto-supersession path
+// (TruthVerifySupersession + CreateDeltaTriplet with empty eventID), against
+// the live mimne_v2 database.
 //
 // Run with:
 //
-//	go test -v ./internal/mimne -run TestDeltaTripletConsolidation
-func TestDeltaTripletConsolidation(t *testing.T) {
+//	ANTHROPIC_API_KEY=... go test -v ./internal/mimne -run TestSupersession_EndToEnd
+func TestSupersession_EndToEnd(t *testing.T) {
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY not set — supersession end-to-end test requires LLM")
+	}
 	ctx := context.Background()
 
 	// --- Connect to DB ---
@@ -86,14 +91,21 @@ func TestDeltaTripletConsolidation(t *testing.T) {
 		return id
 	}
 
-	// --- Step 2: Store prior (A) and new (B) test learnings ---
-	// B contains "actually" so hasCorrectionSignal fires, ensuring DetectDeltaTriplets
-	// includes A as a candidate regardless of embedding similarity.
+	// --- Store prior (A) and new (B) contradictory learnings ---
+	// Storing B triggers TruthVerifySupersession. The LLM sees A as a similar
+	// candidate (sim ~0.82), judges B as a contradiction, and StoreLearning
+	// commits the supersession via CreateDeltaTriplet(A, B, "") — empty eventID
+	// is fine post-Task-65 because the session buffer is empty in tests.
 	priorText := "The integration test framework for delta triplet consolidation uses MCP protocol for all database operations and requires explicit connection pooling configuration"
 	newText := "The integration test framework for delta triplet consolidation actually queries Postgres directly using pgxpool, MCP protocol is only used by Claude Desktop interface"
 
 	learningAID := storeLearning(priorText, "A (prior)")
 	cleanupIDs = append(cleanupIDs, learningAID)
+
+	// --- Diagnostic: pgvector distance from learningA to learningB's stored embedding ---
+	// Captured BEFORE storing B so we can surface the raw similarity signal even
+	// if the LLM call later fails; useful when tests fail unexpectedly.
+	// (Delayed until after B is stored below — embedding lookup needs B in DB.)
 
 	learningBID := storeLearning(newText, "B (new)")
 	cleanupIDs = append(cleanupIDs, learningBID)
@@ -121,7 +133,9 @@ func TestDeltaTripletConsolidation(t *testing.T) {
 			t.Logf("DIAG: learningA pgvector distance to B = %.6f  (similarity = %.6f)", distAtoB, 1.0-distAtoB)
 		}
 
-		// Run the exact query DetectDeltaTriplets uses (LIMIT 15 = maxCandidates*3 = 5*3).
+		// Run the candidate query against all non-superseded learnings. Post-
+		// auto-supersession, A has superseded_by set, so it will NOT appear here —
+		// the log serves as diagnostic signal rather than assertion.
 		diagRows, diagErr := pool.Query(ctx, `
 SELECT id, (1.0 - (embedding <=> $1::vector)) AS similarity
 FROM nodes
@@ -137,7 +151,6 @@ LIMIT 15`,
 			t.Logf("DIAG: raw similarity query failed: %v", diagErr)
 		} else {
 			rank := 0
-			foundInRaw := false
 			for diagRows.Next() {
 				var rid string
 				var sim float64
@@ -146,70 +159,12 @@ LIMIT 15`,
 				}
 				rank++
 				if rid == learningAID {
-					foundInRaw = true
-					t.Logf("DIAG: learningA found in raw LIMIT-15 query at rank %d (similarity=%.6f)", rank, sim)
+					t.Logf("DIAG: learningA still visible at rank %d (similarity=%.6f) — auto-supersession did NOT run", rank, sim)
 				}
 			}
 			diagRows.Close()
-			if !foundInRaw {
-				t.Logf("DIAG: learningA NOT found in raw LIMIT-15 query (searched %d rows)", rank)
-			}
+			t.Logf("DIAG: raw LIMIT-15 query scanned %d rows (A filtered out by superseded_by IS NULL once supersession committed)", rank)
 		}
-	}
-
-	// --- Step 3: Create a turn node representing the triggering event ---
-	var turnID string
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO nodes (id, node_type, content, created_at)
-		 VALUES (gen_random_uuid(), 'turn',
-		         '{"role":"human","text":"Clarifying MCP vs Postgres: Metis goes direct"}',
-		         now())
-		 RETURNING id`,
-	).Scan(&turnID); err != nil {
-		t.Fatalf("create turn node: %v", err)
-	}
-	cleanupIDs = append(cleanupIDs, turnID)
-	t.Logf("turn (event):      %s", turnID)
-
-	// --- Step 4: Detect delta triplet candidates ---
-	candidates, err := m.DetectDeltaTriplets(ctx, learningBID, 5)
-	if err != nil {
-		t.Fatalf("DetectDeltaTriplets: %v", err)
-	}
-	t.Logf("DetectDeltaTriplets: %d candidate(s) returned", len(candidates))
-
-	foundInCandidates := false
-	for _, c := range candidates {
-		t.Logf("  candidate: prior_id=%s similarity=%.4f correctionSignal=%v",
-			c.PriorID, c.Similarity, c.HasCorrectionSignal)
-		if c.PriorID == learningAID {
-			foundInCandidates = true
-		}
-	}
-	if !foundInCandidates {
-		if !m.Embedder.ready {
-			// Zero-vector embeddings make cosine similarity unreliable across many
-			// existing zero-embedding nodes — log and continue rather than fail.
-			t.Logf("NOTE: learningA not detected as candidate (embedder not ready; zero-vector similarity unreliable)")
-		} else {
-			t.Errorf("learningA (%s) not found in DetectDeltaTriplets candidates for learningB (%s)",
-				learningAID, learningBID)
-		}
-	}
-
-	// --- Step 5: Commit the delta triplet ---
-	triplet, err := m.CreateDeltaTriplet(ctx, learningAID, learningBID, turnID)
-	if err != nil {
-		t.Fatalf("CreateDeltaTriplet: %v", err)
-	}
-	if triplet.NewID != learningBID {
-		t.Errorf("triplet.NewID = %q, want %q", triplet.NewID, learningBID)
-	}
-	if triplet.PriorID != learningAID {
-		t.Errorf("triplet.PriorID = %q, want %q", triplet.PriorID, learningAID)
-	}
-	if triplet.EventID != turnID {
-		t.Errorf("triplet.EventID = %q, want %q", triplet.EventID, turnID)
 	}
 
 	// --- Step 6a: Verify supersedes edge: learningB → learningA ---
@@ -225,17 +180,20 @@ LIMIT 15`,
 		t.Errorf("supersedes edge (B→A): got %d, want 1", supersedgesCount)
 	}
 
-	// --- Step 6b: Verify triggered_by edge: learningB → turn ---
+	// --- Step 6b: Verify NO triggered_by edge exists for learningB ---
+	// StoreLearning called CreateDeltaTriplet with empty eventID (empty session
+	// buffer in tests); per Task 65, the triggered_by edge is skipped when
+	// eventID is empty. Document that behavior here.
 	var triggeredCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM edges
-		 WHERE source_id = $1::uuid AND target_id = $2::uuid AND edge_type = 'triggered_by'`,
-		learningBID, turnID,
+		 WHERE source_id = $1::uuid AND edge_type = 'triggered_by'`,
+		learningBID,
 	).Scan(&triggeredCount); err != nil {
 		t.Fatalf("query triggered_by edge: %v", err)
 	}
-	if triggeredCount != 1 {
-		t.Errorf("triggered_by edge (B→turn): got %d, want 1", triggeredCount)
+	if triggeredCount != 0 {
+		t.Errorf("triggered_by edge from B: got %d, want 0 (empty eventID should skip the edge)", triggeredCount)
 	}
 
 	// --- Step 6c: Verify learningA.superseded_by = learningBID ---
@@ -247,7 +205,7 @@ LIMIT 15`,
 		t.Fatalf("query superseded_by: %v", err)
 	}
 	if supersededBy == nil {
-		t.Fatal("learningA.superseded_by is NULL, want learningBID")
+		t.Fatal("learningA.superseded_by is NULL, want learningBID — StoreLearning(B) did not auto-supersede A")
 	}
 	if *supersededBy != learningBID {
 		t.Errorf("learningA.superseded_by = %q, want %q", *supersededBy, learningBID)
@@ -305,15 +263,13 @@ LIMIT 15`,
 		t.Errorf("learningA (%s) not found in ListSupersededLearnings", learningAID)
 	}
 
-	// --- Guard: double-supersession must be rejected ---
-	_, err = m.CreateDeltaTriplet(ctx, learningAID, learningBID, turnID)
+	// --- Guard: double-supersession must be rejected even with empty eventID ---
+	_, err = m.CreateDeltaTriplet(ctx, learningAID, learningBID, "")
 	if err == nil {
 		t.Error("expected CreateDeltaTriplet to fail when prior is already superseded, but got nil error")
 	} else {
 		t.Logf("double-supersession correctly rejected: %v", err)
 	}
-
-	// --- Step 9: cleanup deferred above ---
 }
 
 // TestDetectDeltaTriplets_CorrectionSignal verifies that correction language in the
@@ -412,6 +368,167 @@ func TestDeltaCandidatesJSON(t *testing.T) {
 	}
 	if parsed[1]["similarity"].(float64) != 0.87 {
 		t.Errorf("parsed[1].similarity = %v, want 0.87", parsed[1]["similarity"])
+	}
+}
+
+// TestTruthVerify_CitationIsNotContradiction verifies that a new learning which
+// cites an existing learning as supporting evidence does NOT supersede it.
+// This is the false-positive scenario that motivated removing the embedding-only
+// supersession fast-path (Task 64).
+func TestTruthVerify_CitationIsNotContradiction(t *testing.T) {
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY not set — truth-verify tests require LLM")
+	}
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, testDBURL())
+	if err != nil {
+		t.Skipf("cannot connect to mimne_v2: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("cannot ping mimne_v2: %v", err)
+	}
+
+	// Clean up stale test data.
+	_, _ = pool.Exec(ctx,
+		`DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE node_type = 'learning' AND content->>'domain' = 'tv-citation-test')
+		    OR target_id IN (SELECT id FROM nodes WHERE node_type = 'learning' AND content->>'domain' = 'tv-citation-test')`)
+	_, _ = pool.Exec(ctx,
+		`DELETE FROM nodes WHERE node_type = 'learning' AND content->>'domain' = 'tv-citation-test'`)
+
+	m := New(pool, modelDir())
+	defer m.Embedder.Close()
+
+	var cleanupIDs []string
+	defer func() {
+		if len(cleanupIDs) == 0 {
+			return
+		}
+		_, _ = pool.Exec(ctx,
+			`DELETE FROM edges WHERE source_id = ANY($1::uuid[]) OR target_id = ANY($1::uuid[])`, cleanupIDs)
+		_, _ = pool.Exec(ctx,
+			`DELETE FROM nodes WHERE id = ANY($1::uuid[])`, cleanupIDs)
+	}()
+
+	storeLearning := func(text, label string) string {
+		raw := m.StoreLearning(ctx, text, "test", "tv-citation-test", "")
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			t.Fatalf("parse StoreLearning %s result: %v", label, err)
+		}
+		if parsed["status"] != "ok" {
+			t.Fatalf("StoreLearning %s failed: %s", label, raw)
+		}
+		id, _ := parsed["learning_id"].(string)
+		if id == "" {
+			t.Fatalf("StoreLearning %s: empty learning_id", label)
+		}
+		cleanupIDs = append(cleanupIDs, id)
+		return id
+	}
+
+	// Learning A: states a fact with distinctive vocabulary.
+	aID := storeLearning(
+		"the 15x/20ms replay-fidelity ceiling holds at cosine threshold 0.46-0.54",
+		"A (fact)")
+
+	// Learning B: cites A's phrases as supporting evidence for a different claim.
+	storeLearning(
+		"because 240x exceeds the 15x/20ms ceiling, prior 240x data using 0.46-0.54 thresholds is suspect",
+		"B (citation)")
+
+	// Assert A was NOT superseded — B cites A, it does not contradict it.
+	var supersededBy *string
+	err = pool.QueryRow(ctx,
+		`SELECT superseded_by::text FROM nodes WHERE id = $1::uuid`, aID,
+	).Scan(&supersededBy)
+	if err != nil {
+		t.Fatalf("query superseded_by for A: %v", err)
+	}
+	if supersededBy != nil {
+		t.Errorf("learning A was wrongly superseded by %s — citation is not contradiction", *supersededBy)
+	}
+}
+
+// TestTruthVerify_GenuineContradictionStillCaught verifies that the LLM
+// truth-verify path correctly supersedes a learning when a new one genuinely
+// contradicts it (same attribute, different value).
+func TestTruthVerify_GenuineContradictionStillCaught(t *testing.T) {
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY not set — truth-verify tests require LLM")
+	}
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, testDBURL())
+	if err != nil {
+		t.Skipf("cannot connect to mimne_v2: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("cannot ping mimne_v2: %v", err)
+	}
+
+	// Clean up stale test data.
+	_, _ = pool.Exec(ctx,
+		`DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE node_type = 'learning' AND content->>'domain' = 'tv-contradiction-test')
+		    OR target_id IN (SELECT id FROM nodes WHERE node_type = 'learning' AND content->>'domain' = 'tv-contradiction-test')`)
+	_, _ = pool.Exec(ctx,
+		`DELETE FROM nodes WHERE node_type = 'learning' AND content->>'domain' = 'tv-contradiction-test'`)
+
+	m := New(pool, modelDir())
+	defer m.Embedder.Close()
+
+	var cleanupIDs []string
+	defer func() {
+		if len(cleanupIDs) == 0 {
+			return
+		}
+		_, _ = pool.Exec(ctx,
+			`DELETE FROM edges WHERE source_id = ANY($1::uuid[]) OR target_id = ANY($1::uuid[])`, cleanupIDs)
+		_, _ = pool.Exec(ctx,
+			`DELETE FROM nodes WHERE id = ANY($1::uuid[])`, cleanupIDs)
+	}()
+
+	storeLearning := func(text, label string) string {
+		raw := m.StoreLearning(ctx, text, "test", "tv-contradiction-test", "")
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			t.Fatalf("parse StoreLearning %s result: %v", label, err)
+		}
+		if parsed["status"] != "ok" {
+			t.Fatalf("StoreLearning %s failed: %s", label, raw)
+		}
+		id, _ := parsed["learning_id"].(string)
+		if id == "" {
+			t.Fatalf("StoreLearning %s: empty learning_id", label)
+		}
+		cleanupIDs = append(cleanupIDs, id)
+		return id
+	}
+
+	// Learning A: states implementation language is Python/FastAPI.
+	aID := storeLearning(
+		"implementation language is Python/FastAPI",
+		"A (Python)")
+
+	// Learning B: states implementation language is Go single-binary.
+	bID := storeLearning(
+		"implementation language is Go single-binary",
+		"B (Go)")
+
+	// Assert A was superseded by B — genuine contradiction on same attribute.
+	var supersededBy *string
+	err = pool.QueryRow(ctx,
+		`SELECT superseded_by::text FROM nodes WHERE id = $1::uuid`, aID,
+	).Scan(&supersededBy)
+	if err != nil {
+		t.Fatalf("query superseded_by for A: %v", err)
+	}
+	if supersededBy == nil {
+		t.Errorf("learning A was NOT superseded — genuine contradiction should have been caught")
+	} else if *supersededBy != bID {
+		t.Errorf("learning A superseded_by = %s, want %s", *supersededBy, bID)
 	}
 }
 
